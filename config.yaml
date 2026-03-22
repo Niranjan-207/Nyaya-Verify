@@ -1,0 +1,13 @@
+# Environment Config
+device: cuda
+model_name: llama3.1:8b
+# Set explicit instructions for user environment setup
+# IMPORTANT: Export these variables before execution to avoid C: drive filling up.
+# PowerShell: 
+# $env:HF_HOME="D:\Your\Path\HuggingFace"
+# $env:OLLAMA_MODELS="D:\Your\Path\Ollama"
+
+# VRAM constrained to 6141MiB (RTX 4050)
+vram_constraints:
+  bge_deberta_allocation_mb: 1000
+  ollama_allocation_mb: 5000

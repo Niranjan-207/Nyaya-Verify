@@ -1,0 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+torchaudio
+langchain
+chromadb
+sentence-transformers
+pymupdf
+ollama
+ragas
+pyyaml
+streamlit
+langchain-ollama
