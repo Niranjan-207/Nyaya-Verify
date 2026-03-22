@@ -54,11 +54,12 @@ The Indian legal system is currently undergoing a massive statutory transition f
 | Component | Technology | Version / Model |
 |-----------|------------|-----------------|
 | Core Inference Engine | Ollama | `llama3.1:8b` |
-| Vector Datastore | ChromaDB | Latest API |
+| Vector Datastore | ChromaDB | `1.5.5` |
 | Embedding Pipeline | Sentence Transformers | `BAAI/bge-small-en-v1.5` |
 | NLI Cross-Encoder | HuggingFace CrossEncoder | `cross-encoder/nli-deberta-v3-small` |
-| Frontend Interface | Streamlit | Latest |
-| Backend SDK | LangChain | `langchain_ollama` |
+| Frontend Interface | Streamlit | `1.55.0` |
+| Backend SDK | LangChain (`langchain-ollama`) | `0.2.17` |
+| Runtime Environment | Python | `3.12.10` |
 
 ## Setup Instructions
 
