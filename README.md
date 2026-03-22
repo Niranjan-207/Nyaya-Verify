@@ -61,6 +61,13 @@ The Indian legal system is currently undergoing a massive statutory transition f
 | Backend SDK | LangChain (`langchain-ollama`) | `0.2.17` |
 | Runtime Environment | Python | `3.12.10` |
 
+## Hardware Requirements
+
+* **GPU**: NVIDIA GPU with CUDA 12.4+
+* **VRAM**: 6GB+
+* **OS**: Windows / Linux
+* **Dependencies**: Ollama installed locally from [ollama.com](https://ollama.com)
+
 ## Setup Instructions
 
 1. **Clone the Repository**
@@ -69,32 +76,26 @@ The Indian legal system is currently undergoing a massive statutory transition f
    cd Nyaya-Verify
    ```
 
-2. **Setup Virtual Environment**
+2. **Install Dependencies**
    ```bash
-   python3.12 -m venv .venv
-   .\.venv\Scripts\activate
+   python3.12 -m pip install -r requirements.txt
    ```
 
-3. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Pull Local Models**
+3. **Pull Local Models**
    Ensure Ollama is running locally, then fetch the target engine parameters:
    ```bash
    ollama pull llama3.1:8b
    ```
 
-5. **Ingest Legal PDF Data**
+4. **Ingest Legal PDF Data**
    Place your verified legal PDFs in the `data/` directory and run the embedding engine:
    ```bash
    python scripts/ingest_all.py
    ```
 
-6. **Launch the Interface**
+5. **Launch the Interface**
    ```bash
-   streamlit run app.py
+   python3.12 -m streamlit run app.py
    ```
 
 ## Example Queries
@@ -115,7 +116,6 @@ The Indian legal system is currently undergoing a massive statutory transition f
 
 ```text
 Nyaya-Verify/
-├── .gsd/                   # GSD Task & State Tracking Protocol limits
 ├── data/                   # Target Indian Legal Statutes (.pdfs)
 ├── scripts/
 │   ├── ask.py              # Pure CLI query interaction pipeline
