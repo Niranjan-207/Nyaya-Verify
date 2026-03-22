@@ -1,0 +1,25 @@
+﻿# Agent & tool files
+.agent/
+.gemini/
+.gsd/
+.venv/
+adapters/
+docs/
+
+# Agent config files
+GSD-STYLE.md
+model_capabilities.yaml
+PROJECT_RULES.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Data & models (too large for GitHub)
+data/chroma_db/
+data/input_pdfs/
+
+# Environment
+.env
+*.gguf
