@@ -639,18 +639,6 @@ if submitted and query.strip():
     # Entity extracted from query (used later in Evidence Vault image fetch)
     primary_condition = extract_disease_entity(query, results)
 
-    # ── Source-Aware Logic Badge + View-Mode Pill ─────────────────────────────
-    st.markdown(_source_badge(top_verdict, verdicts), unsafe_allow_html=True)
-    _mode_color = "#238636" if view_mode == "Brief" else "#9e6a03"
-    st.markdown(
-        f'<div style="text-align:right;margin-top:-0.8rem;margin-bottom:0.6rem;">'
-        f'<span style="font-size:0.75rem;color:{_mode_color};font-weight:600;'
-        f'border:1px solid {_mode_color};border-radius:12px;padding:2px 10px;">'
-        f'{"📋 Full Protocol" if view_mode == "Brief" else "⚡ Short Summary"}'
-        f'</span></div>',
-        unsafe_allow_html=True,
-    )
-
     # ── Critical Hard-Stop Safety Alert ───────────────────────────────────────
     if hard_stop_rule:
         st.markdown(
