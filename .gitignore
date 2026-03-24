@@ -1,10 +1,14 @@
 ﻿# Agent & tool files
 .agent/
+.claude/
 .gemini/
 .gsd/
 .venv/
 adapters/
 docs/
+
+# Claude brain file (session memory — not project source)
+CLAUDE_MEMORY.md
 
 # Agent config files
 GSD-STYLE.md
