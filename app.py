@@ -33,7 +33,7 @@ from src.retrieval.vector_store import ChromaDataStore
 from src.audit.nli_judge import PairwiseAuditor
 from src.generation.llm_interface import LegalSynthesizer
 from src.verifier import ClinicalAuditor
-from src.ingestion.pdf_parser import PDFParser
+from src.ingestion.pdf_parser import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -413,11 +413,10 @@ with st.sidebar:
                     if year_str.strip().isdigit()
                     else None
                 )
-                parser  = PDFParser()
                 chunker = HybridHierarchicalChunker()
                 store   = ChromaDataStore()
 
-                blocks = parser.extract(tmp_path, statute_year=year)
+                blocks = extract_text_with_metadata(tmp_path, statute_year=year)
                 chunks = chunker.chunk(blocks)
                 n      = store.ingest(chunks)
 
