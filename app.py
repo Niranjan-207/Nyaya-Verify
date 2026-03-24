@@ -43,12 +43,12 @@ MODEL_NAME = _cfg.get("model_name", "llama3.1:8b")
 
 # ─── Imports ──────────────────────────────────────────────────────────────────
 from src.retrieval.vector_store   import ChromaDataStore
-from src.audit.nli_judge          import PairwiseAuditor
+from src.audit.nli_judge          import PairwiseAuditor, check_contraindication_hardstop
 from src.generation.llm_interface import ClinicalSynthesizer
 from src.verifier                 import ClinicalAuditor
 from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
-from src.utils.image_search       import get_clinical_visualization
+from src.utils.image_search       import get_clinical_images
 from src.utils.entity_extractor   import extract_disease_entity
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -190,6 +190,58 @@ hr { border-color:#30363d !important; }
 ::-webkit-scrollbar       { width:5px; height:5px; }
 ::-webkit-scrollbar-track { background:#0d1117; }
 ::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+
+/* ── Critical Safety Alert ──────────────────────────────────────────────── */
+.critical-alert {
+    background: #2d0a0a;
+    border: 2px solid #da3633;
+    border-left: 6px solid #f85149;
+    border-radius: 8px;
+    padding: 1.1rem 1.4rem;
+    margin: 0.8rem 0 1rem;
+    animation: pulse-red 2s infinite;
+}
+.critical-alert-title {
+    color: #f85149;
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+}
+.critical-alert-body {
+    color: #ffa198;
+    font-size: 0.88rem;
+    margin-top: 0.4rem;
+    line-height: 1.6;
+}
+@keyframes pulse-red {
+    0%   { border-left-color: #f85149; box-shadow: 0 0 0 0 rgba(248,81,73,0.4); }
+    50%  { border-left-color: #ff7b72; box-shadow: 0 0 0 6px rgba(248,81,73,0); }
+    100% { border-left-color: #f85149; box-shadow: 0 0 0 0 rgba(248,81,73,0); }
+}
+
+/* ── Correct Protocol Override ───────────────────────────────────────────── */
+.protocol-override {
+    background: #0d2818;
+    border: 1px solid #238636;
+    border-left: 5px solid #3fb950;
+    border-radius: 8px;
+    padding: 1rem 1.3rem;
+    margin: 0.6rem 0;
+    font-size: 0.88rem;
+    color: #c9d1d9;
+    line-height: 1.7;
+}
+
+/* ── Demo Mode Banner ───────────────────────────────────────────────────── */
+.demo-banner {
+    background: #1a1a2e;
+    border: 1px dashed #58a6ff;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    font-size: 0.8rem;
+    color: #58a6ff;
+    margin-bottom: 0.8rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -431,6 +483,27 @@ st.markdown(
 st.markdown("---")
 
 
+# ─── Demo Mode ────────────────────────────────────────────────────────────────
+_DEMO_QUERY = (
+    "Patient presents with a corneal ulcer showing feathery margins and "
+    "satellite lesions. A junior doctor has prescribed Prednisolone 1% eye "
+    "drops four times daily. Should I continue this prescription? "
+    "What is the correct treatment?"
+)
+
+col_demo, _ = st.columns([1, 3])
+with col_demo:
+    if st.button("🎭 Demo: Safety Hard-Stop", use_container_width=True,
+                 help="Simulates a dangerous Steroid-in-Fungal-Keratitis prescription"):
+        st.session_state["_demo_query"]  = _DEMO_QUERY
+        st.session_state["_auto_submit"] = True
+        st.rerun()
+
+# Pick up prefilled query and auto-submit flag set by Demo button
+_auto_submit = st.session_state.pop("_auto_submit", False)
+_prefill     = st.session_state.get("_demo_query", "")
+
+
 # ─── Query Form ───────────────────────────────────────────────────────────────
 with st.form("query_form", clear_on_submit=False):
 
@@ -449,6 +522,7 @@ with st.form("query_form", clear_on_submit=False):
 
     query = st.text_area(
         "Clinical Query",
+        value=_prefill,
         placeholder=(
             "e.g. What is the first-line treatment for open-angle glaucoma "
             "with IOP > 30 mmHg per ICMR guidelines?"
@@ -457,6 +531,18 @@ with st.form("query_form", clear_on_submit=False):
         label_visibility="collapsed",
     )
     submitted = st.form_submit_button("🔍  Verify & Analyse", use_container_width=True)
+
+# Merge auto-submit from Demo Mode button
+if _auto_submit and _prefill:
+    submitted = True
+    query     = _prefill
+    st.session_state.pop("_demo_query", None)     # consume so next run is clean
+
+    st.markdown(
+        '<div class="demo-banner">🎭 <b>Demo Mode active</b> — '
+        'Running the Fungal Keratitis / Steroid safety hard-stop scenario.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ─── Validation ───────────────────────────────────────────────────────────────
@@ -518,6 +604,19 @@ if submitted and query.strip():
             )
             _tmp_auditor.unload()
 
+        # Step 6 — Hard-Stop Contraindication Check (zero-latency rule engine)
+        st.write("🛡 Running contraindication hard-stop safety check…")
+        hard_stop_rule = check_contraindication_hardstop(query, answer_body)
+        if hard_stop_rule:
+            # Force the NLI verdict to CONTRADICTION regardless of model score
+            top_verdict = {
+                "status":     "CONTRADICTION",
+                "confidence": 99.0,
+                "emoji":      "🔴",
+                "color":      "red",
+                "label":      "CONTRADICTION DETECTED",
+            }
+
         pipe_status.update(label="✅ Pipeline Complete", state="complete", expanded=False)
 
     # Entity extracted from query (used later in Evidence Vault image fetch)
@@ -534,6 +633,21 @@ if submitted and query.strip():
         f'</span></div>',
         unsafe_allow_html=True,
     )
+
+    # ── Critical Hard-Stop Safety Alert ───────────────────────────────────────
+    if hard_stop_rule:
+        st.markdown(
+            f'<div class="critical-alert">'
+            f'<div class="critical-alert-title">'
+            f'⚠️ CRITICAL SAFETY ALERT: Potential Clinical Contradiction Detected'
+            f'</div>'
+            f'<div class="critical-alert-body">'
+            f'<b>Rule triggered:</b> {hard_stop_rule["name"]}<br>'
+            f'<b>Risk:</b> {hard_stop_rule["reason"]}'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # ── Dosage Safety Banner ───────────────────────────────────────────────────
     if dosage_report:
@@ -580,8 +694,49 @@ if submitted and query.strip():
             '<span class="section-label">📋 Verified Clinical Answer</span>',
             unsafe_allow_html=True,
         )
-        with st.container(border=True):
-            st.markdown(answer_body)
+
+        if hard_stop_rule:
+            # ── Correct Protocol Override (shown above blurred answer) ─────────
+            st.markdown(
+                '<span class="section-label" style="color:#3fb950;">'
+                '✅ Correct Protocol (ICMR/AIIMS)</span>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="protocol-override">'
+                f'{hard_stop_rule["correct_treatment"].replace(chr(10), "<br>")}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("---")
+
+            # ── Blurred AI Answer with Reveal Checkbox ────────────────────────
+            st.markdown(
+                '<span class="section-label" style="color:#f85149;">'
+                '🔴 AI Response (flagged — may contain dangerous advice)</span>',
+                unsafe_allow_html=True,
+            )
+            reveal = st.checkbox(
+                "⚠️ I understand the clinical risk — reveal AI response",
+                value=False,
+                key="reveal_blurred",
+            )
+            if reveal:
+                with st.container(border=True):
+                    st.markdown(answer_body)
+            else:
+                blurred_html = answer_body.replace("\n", "<br>")
+                st.markdown(
+                    f'<div style="filter:blur(6px);user-select:none;'
+                    f'background:#161b22;border:1px solid #30363d;'
+                    f'border-radius:8px;padding:1rem;font-size:0.9rem;'
+                    f'color:#c9d1d9;line-height:1.7;">'
+                    f'{blurred_html}</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            with st.container(border=True):
+                st.markdown(answer_body)
 
         # ── Citations ──────────────────────────────────────────────────────────
         ts = (verdicts[0]["timestamp"] if verdicts
@@ -629,16 +784,21 @@ if submitted and query.strip():
         _conf_bar("Overall NLI Confidence", top_verdict["confidence"], top_verdict["color"])
         st.divider()
 
-        # ── Web-Retrieved Clinical Image ───────────────────────────────────────
-        # Fetched after pipeline closes — text answer is already visible.
-        # SILENT FAIL: if img_url is None, nothing is rendered at all.
-        with st.spinner("🔍 Fetching clinical reference image…"):
-            img_url = get_clinical_visualization(primary_condition)
+        # ── Web-Retrieved Clinical Images (up to 3) ────────────────────────────
+        # Fetched after pipeline closes — answer already visible in left pane.
+        # SILENT FAIL: if no images found, section is entirely absent.
+        with st.spinner("🔍 Fetching clinical reference images…"):
+            img_urls = get_clinical_images(primary_condition, count=3)
 
-        if img_url:
-            st.image(
-                img_url,
-                caption=f"Web Reference: {primary_condition}",
-                use_container_width=True,
+        if img_urls:
+            st.markdown(
+                '<span class="section-label" style="color:#58a6ff;">'
+                '🌐 Clinical Reference Images</span>',
+                unsafe_allow_html=True,
             )
-            st.caption("Source: Clinical Web Search")
+            img_cols = st.columns(len(img_urls))
+            for col, url in zip(img_cols, img_urls):
+                with col:
+                    st.image(url, use_container_width=True)
+            st.caption(f"Web Reference: {primary_condition} — Source: Clinical Web Search")
+            st.divider()

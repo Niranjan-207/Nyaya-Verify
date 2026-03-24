@@ -1,15 +1,29 @@
 """
-src/audit/nli_judge.py — PairwiseAuditor
-=========================================
+src/audit/nli_judge.py — PairwiseAuditor + Hard-Stop Safety Engine
+===================================================================
 Clinical Safety Logic Engine.
 
-Replaced temporal conflict logic (old law vs new law) with
-Clinical Safety Logic: cross-protocol guideline adherence vs contradiction.
+Two independent safety layers
+------------------------------
+  Layer 1 — PairwiseAuditor (NLI-based)
+    Cross-chunk contradiction detection using DeBERTa-v3-small CrossEncoder.
+    Authority ranking: ICMR(5) > AIIMS(4) > AIOS(3) = AAO(3) > NLEM(2) > Generic(1)
 
-Resolution Priority
--------------------
-  1. Authority Rank  — ICMR(5) > AIIMS(4) > AIOS(3) = AAO(3) > NLEM(2) > Generic(1)
-  2. Recency tiebreaker — higher doc_year wins when ranks are equal
+  Layer 2 — check_contraindication_hardstop() (rule-based, zero-latency)
+    Deterministic keyword-collision engine. Runs AFTER the LLM generates its
+    answer. If a dangerous symptom + dangerous drug co-occur in the query or
+    AI response, the status is FORCED to CONTRADICTION regardless of NLI score.
+
+    Current rules
+    -------------
+    FUNGAL_KERATITIS_STEROID
+      Trigger  : "feathery margins" | "satellite lesions" | "fungal keratitis"
+                 | "fungal ulcer" | "aspergillus" | "fusarium"
+               + "steroid" | "prednisolone" | "dexamethasone" | "betamethasone"
+                 | "corticosteroid"
+      Severity : CRITICAL
+      Reason   : Steroids suppress immunity → fungal proliferation → perforation.
+                 Use Natamycin 5% / Voriconazole 1%.
 
 Dosage Contradiction Detection
 -------------------------------
@@ -25,8 +39,115 @@ NLI Label Index (cross-encoder/nli-deberta-v3-small)
 import re
 import gc
 import torch
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 from sentence_transformers.cross_encoder import CrossEncoder
+
+
+# ---------------------------------------------------------------------------
+# Hard-Stop Contraindication Rules
+# ---------------------------------------------------------------------------
+# Each rule fires when ANY symptom_keyword AND ANY drug_keyword appear in the
+# combined query + AI-response text (case-insensitive substring match).
+# Add new rules to this list — no code changes elsewhere needed.
+# ---------------------------------------------------------------------------
+CONTRAINDICATION_RULES: List[Dict[str, Any]] = [
+    {
+        "id":       "FUNGAL_KERATITIS_STEROID",
+        "name":     "Steroid Contraindicated in Fungal Keratitis",
+        "severity": "CRITICAL",
+        "symptom_keywords": [
+            "feathery margins", "feathery margin",
+            "satellite lesions", "satellite lesion",
+            "fungal keratitis", "fungal ulcer",
+            "fungal infection of cornea", "mycotic keratitis",
+            "aspergillus", "fusarium", "candida keratitis",
+        ],
+        "drug_keywords": [
+            "steroid", "steroids", "prednisolone", "dexamethasone",
+            "betamethasone", "triamcinolone", "methylprednisolone",
+            "hydrocortisone", "corticosteroid", "corticosteroids",
+            "cortisone", "fluorometholone",
+        ],
+        "reason": (
+            "Steroids (prednisolone / dexamethasone) are ABSOLUTELY "
+            "CONTRAINDICATED in fungal keratitis. They suppress the local "
+            "immune response, allowing rapid fungal proliferation and risking "
+            "corneal perforation and endophthalmitis."
+        ),
+        "correct_treatment": (
+            "**Fungal Keratitis — Correct Protocol (ICMR/AIIMS)**\n\n"
+            "- **First-line:** Natamycin 5% eye drops — 1 drop every **1 hour** "
+            "(waking hours) × 3–4 weeks\n"
+            "- **Alternative / deep stromal:** Voriconazole 1% eye drops or "
+            "oral Voriconazole **200 mg BD**\n"
+            "- **Cycloplegic:** Atropine 1% TDS for pain and to prevent synechiae\n"
+            "- **Do NOT use:** Prednisolone, Dexamethasone, or any corticosteroid\n"
+            "- **Refer** to cornea specialist if no improvement in 48–72 hours "
+            "or if perforation is imminent\n"
+            "- **Culture** corneal scrapings before starting antifungals"
+        ),
+    },
+    {
+        "id":       "VIRAL_KERATITIS_ANTIFUNGAL",
+        "name":     "Antifungal Contraindicated in Viral (Herpetic) Keratitis",
+        "severity": "HIGH",
+        "symptom_keywords": [
+            "dendritic ulcer", "dendritic lesion", "herpetic keratitis",
+            "herpes simplex keratitis", "hsv keratitis", "geographic ulcer",
+        ],
+        "drug_keywords": [
+            "natamycin", "voriconazole", "antifungal", "fluconazole",
+            "itraconazole", "amphotericin",
+        ],
+        "reason": (
+            "Antifungals are ineffective and waste critical time in viral "
+            "(herpetic) keratitis. The correct treatment is antiviral therapy "
+            "with Acyclovir / Ganciclovir."
+        ),
+        "correct_treatment": (
+            "**Herpetic Keratitis — Correct Protocol (AIIMS/AAO)**\n\n"
+            "- **First-line:** Acyclovir 3% ointment **5× daily** × 14 days\n"
+            "- **Alternative:** Ganciclovir 0.15% gel **5× daily**\n"
+            "- **Do NOT use:** Antifungals (Natamycin, Voriconazole)\n"
+            "- **Mild topical steroids** may be added for stromal disease "
+            "*only under specialist supervision*\n"
+            "- **Cycloplegic** for iritis component"
+        ),
+    },
+]
+
+
+def check_contraindication_hardstop(
+    query: str,
+    ai_response: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Zero-latency keyword-collision safety check.
+
+    Scans the combined query + AI response for dangerous drug-symptom pairs.
+    Returns the triggered rule dict if a hard-stop is warranted, else None.
+
+    Parameters
+    ----------
+    query : str
+        The clinician's original question.
+    ai_response : str
+        The LLM-generated answer text.
+
+    Returns
+    -------
+    dict | None
+        The matching rule from CONTRAINDICATION_RULES, or None if safe.
+    """
+    combined = (query + " " + ai_response).lower()
+
+    for rule in CONTRAINDICATION_RULES:
+        symptom_hit = any(kw in combined for kw in rule["symptom_keywords"])
+        drug_hit    = any(kw in combined for kw in rule["drug_keywords"])
+        if symptom_hit and drug_hit:
+            return rule
+
+    return None
 
 # ---------------------------------------------------------------------------
 # Clinical authority ranking
