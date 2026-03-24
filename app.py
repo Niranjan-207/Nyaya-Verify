@@ -27,7 +27,6 @@ PHI Safety: No cloud APIs. All inference runs locally on RTX 4050.
 """
 
 import os
-import re
 import gc
 import sys
 import yaml
@@ -126,15 +125,6 @@ html, body,
     font-weight:600; margin:0.5rem 0; display:block;
 }
 
-/* ── Citation Footer ────────────────────────────────────────────────────── */
-.citation-footer {
-    background:#0d1117; border:1px solid #30363d;
-    border-top:2px solid #58a6ff; border-radius:0 0 8px 8px;
-    padding:0.75rem 1.1rem; font-size:0.8rem; color:#8b949e;
-    margin-top:0.8rem; line-height:1.8;
-}
-
-/* ── Direct Clip ────────────────────────────────────────────────────────── */
 /* ── Section Labels ─────────────────────────────────────────────────────── */
 .section-label {
     color:#8b949e; font-size:0.73rem; font-weight:700;
@@ -593,25 +583,41 @@ if submitted and query.strip():
         with st.container(border=True):
             st.markdown(answer_body)
 
-        # ── Citation Footer ────────────────────────────────────────────────────
+        # ── Citations ──────────────────────────────────────────────────────────
         ts = (verdicts[0]["timestamp"] if verdicts
               else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        cit_rows = []
-        for i, chunk in enumerate(results, 1):
-            m = chunk.get("metadata", {})
-            proto = m.get("Protocol_Name") or _protocol_label(m.get("filename", "?"))
-            cit_rows.append(
-                f"<b>[{i}]</b>&nbsp;{proto}&nbsp;·&nbsp;"
-                f"p.{m.get('Page_Number', m.get('page', '?'))}&nbsp;·&nbsp;"
-                f"{m.get('doc_year', m.get('statute_year', '?'))}"
-            )
+
         st.markdown(
-            '<div class="citation-footer">'
-            '<span style="color:#58a6ff;font-weight:700;">📎 Source Metadata</span>'
-            '<br>' + "&nbsp;&nbsp;│&nbsp;&nbsp;".join(cit_rows) +
-            f'<br><span style="color:#6e7681;font-size:0.75rem;">'
-            f'⏱ Verified at {ts}&nbsp;·&nbsp;Specialty: {active_specialty}</span>'
+            '<div style="margin-top:1rem;">'
+            '<span style="color:#58a6ff;font-size:0.73rem;font-weight:700;'
+            'letter-spacing:0.12em;text-transform:uppercase;">📎 Sources</span>'
             '</div>',
+            unsafe_allow_html=True,
+        )
+
+        for i, chunk in enumerate(results, 1):
+            m      = chunk.get("metadata", {})
+            fname  = m.get("filename", "Unknown")
+            pg     = m.get("Page_Number", m.get("page", "?"))
+            proto  = m.get("Protocol_Name") or _protocol_label(fname)
+            year   = m.get("doc_year", m.get("statute_year", "—"))
+            st.markdown(
+                f'<div style="background:#161b22;border:1px solid #30363d;'
+                f'border-left:3px solid #58a6ff;border-radius:6px;'
+                f'padding:0.55rem 0.85rem;margin:0.35rem 0;font-size:0.82rem;">'
+                f'<span style="color:#58a6ff;font-weight:700;">[{i}]</span>'
+                f'&nbsp;<span style="color:#e6edf3;font-weight:600;">{fname}</span>'
+                f'<span style="color:#8b949e;"> &nbsp;·&nbsp; </span>'
+                f'<span style="color:#c9d1d9;">Page&nbsp;<b>{pg}</b></span>'
+                f'<span style="color:#8b949e;"> &nbsp;·&nbsp; </span>'
+                f'<span style="color:#8b949e;">{proto} · {year}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            f'<div style="font-size:0.72rem;color:#6e7681;margin-top:0.4rem;">'
+            f'⏱ Verified at {ts} · Specialty: {active_specialty}</div>',
             unsafe_allow_html=True,
         )
 

@@ -1,118 +1,146 @@
 """
 src/utils/image_search.py — Clinical Web Image Search
 ======================================================
-Fetches the top-1 clinical image URL from DuckDuckGo Images for a given
-medical term.
+Returns a relevant medical image URL for a given condition name.
+
+Two-Stage Strategy
+------------------
+  Stage 1 — Wikipedia REST API  (primary, most reliable)
+    Calls https://en.wikipedia.org/api/rest_v1/page/summary/{term}
+    Wikipedia has a high-quality thumbnail for every major medical condition
+    (Glaucoma, Cataract, Diabetes, etc.) and the upload.wikimedia.org CDN
+    is always reachable without authentication.
+    If the direct slug lookup misses, falls back to the Wikipedia search API
+    to resolve the correct article title first.
+
+  Stage 2 — DuckDuckGo Images  (fallback)
+    Used when Wikipedia returns no thumbnail (rare conditions, abbreviations).
+    Returns the first valid http(s) URL from the results without a slow
+    reachability check — the previous HEAD/GET approach was the main cause
+    of images never appearing.
 
 SILENT FAIL CONTRACT
 --------------------
-  This function NEVER raises an exception and NEVER returns a placeholder.
-  Any error (network, no results, bad URL, timeout) → returns None.
-  The caller (app.py) simply skips the image element when None is returned.
-
-Search Strategy
----------------
-  query = "{medical_term} clinical ophthalmology finding fundus slit-lamp"
-  → top 1 image result URL is returned after a reachability check.
-
-Privacy Note
-------------
-  DuckDuckGo image search is performed over HTTPS and does not require an
-  API key. No patient data is ever included in the search term — only the
-  extracted condition name (e.g. "Glaucoma", "Cataract").
+  get_clinical_visualization() never raises. Any failure → returns None.
+  The caller (app.py) skips the image element entirely when None.
 """
 
+import json
 import urllib.request
+import urllib.parse
 from typing import Optional
 
-# Reachability check timeout in seconds — tight enough not to stall the UI
-_URL_TIMEOUT = 4
-
-# Search suffix appended to every medical term query
-_SEARCH_SUFFIX = "clinical ophthalmology finding fundus slit-lamp"
+_TIMEOUT = 6  # seconds — enough for Wikipedia, not long enough to stall UI
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 def get_clinical_visualization(medical_term: str) -> Optional[str]:
     """
-    Return the top-1 DuckDuckGo Images URL for a clinical ophthalmology term.
+    Return an image URL relevant to the medical condition.
 
-    Canonical name used throughout the codebase. ``get_clinical_image`` is
-    kept as a backwards-compatible alias.
+    Tries Wikipedia thumbnail first (reliable CDN, no auth).
+    Falls back to DuckDuckGo Images if Wikipedia has no thumbnail.
 
     Parameters
     ----------
     medical_term : str
-        The primary condition name, e.g. "Glaucoma", "Cataract", "Acne".
+        Condition name, e.g. "Glaucoma", "Diabetic Retinopathy", "Cataract".
 
     Returns
     -------
     str | None
-        A publicly reachable image URL, or None on any failure.
-
-    Examples
-    --------
-    >>> url = get_clinical_visualization("open-angle glaucoma")
-    >>> if url:
-    ...     st.image(url, caption="Web Reference: Open-Angle Glaucoma")
-    # If None, skip entirely — no placeholder, no error message
+        Image URL, or None on any failure.
     """
     if not medical_term or not medical_term.strip():
         return None
 
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        # duckduckgo-search not installed — silent fail
-        return None
-
-    query = f"{medical_term.strip()} {_SEARCH_SUFFIX}"
-
-    try:
-        with DDGS() as ddgs:
-            hits = list(ddgs.images(query, max_results=3))
-    except Exception:
-        return None
-
-    if not hits:
-        return None
-
-    # Try each result until we find one that is actually reachable
-    for hit in hits:
-        url = hit.get("image") or hit.get("url") or ""
-        if not url.startswith("http"):
-            continue
-        if _is_reachable(url):
-            return url
-
-    return None
+    return _wikipedia_image(medical_term) or _ddgs_image(medical_term)
 
 
-# Backwards-compatible alias — existing callers need not change
+# Backwards-compatible alias
 get_clinical_image = get_clinical_visualization
 
 
 # ---------------------------------------------------------------------------
-# Private helper
+# Stage 1 — Wikipedia REST API
 # ---------------------------------------------------------------------------
-def _is_reachable(url: str) -> bool:
+def _wikipedia_image(term: str) -> Optional[str]:
     """
-    Issue a HEAD request (fallback GET) to check if the URL is accessible.
-    Returns False on any exception — never raises.
+    Fetch the Wikipedia article thumbnail for the given medical term.
+    Two-step: direct slug lookup → search API fallback.
     """
+    # Step A: direct title lookup
+    url = _wiki_summary_image(term.strip().replace(" ", "_"))
+    if url:
+        return url
+
+    # Step B: search API to get the canonical article title
     try:
-        req = urllib.request.Request(url, method="HEAD")
-        req.add_header("User-Agent", "Mozilla/5.0")
-        with urllib.request.urlopen(req, timeout=_URL_TIMEOUT):
-            return True
+        search_url = (
+            "https://en.wikipedia.org/w/api.php?"
+            + urllib.parse.urlencode({
+                "action": "query",
+                "list": "search",
+                "srsearch": term,
+                "format": "json",
+                "srlimit": "3",
+            })
+        )
+        req = urllib.request.Request(search_url)
+        req.add_header("User-Agent", "MedVerify/1.0 (medical-education-tool)")
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+
+        hits = data.get("query", {}).get("search", [])
+        for hit in hits:
+            title = hit.get("title", "")
+            img = _wiki_summary_image(title.replace(" ", "_"))
+            if img:
+                return img
     except Exception:
         pass
 
-    # Some servers reject HEAD — try a small GET range instead
+    return None
+
+
+def _wiki_summary_image(slug: str) -> Optional[str]:
+    """
+    Call the Wikipedia summary endpoint for one article slug.
+    Returns the thumbnail URL or None.
+    """
     try:
-        req = urllib.request.Request(url)
-        req.add_header("User-Agent", "Mozilla/5.0")
-        req.add_header("Range", "bytes=0-1023")
-        with urllib.request.urlopen(req, timeout=_URL_TIMEOUT):
-            return True
+        api_url = (
+            "https://en.wikipedia.org/api/rest_v1/page/summary/"
+            + urllib.parse.quote(slug, safe="")
+        )
+        req = urllib.request.Request(api_url)
+        req.add_header("User-Agent", "MedVerify/1.0 (medical-education-tool)")
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+        return data.get("thumbnail", {}).get("source") or None
     except Exception:
-        return False
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — DuckDuckGo Images fallback
+# ---------------------------------------------------------------------------
+def _ddgs_image(term: str) -> Optional[str]:
+    """
+    DuckDuckGo image search — returns the first valid https URL.
+    No reachability check (was the bottleneck that caused images to never show).
+    """
+    try:
+        from duckduckgo_search import DDGS
+        query = f"{term} medical clinical"
+        with DDGS() as ddgs:
+            hits = list(ddgs.images(query, max_results=5))
+        for hit in hits:
+            url = hit.get("image", "")
+            if url.startswith("https://"):
+                return url
+    except Exception:
+        pass
+    return None
