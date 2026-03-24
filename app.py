@@ -460,6 +460,20 @@ with st.sidebar:
                 st.error(f"Ingestion failed: {exc}")
 
     st.markdown('<hr style="margin:0.8rem 0;">', unsafe_allow_html=True)
+
+    # ── History Controls ───────────────────────────────────────────────────────
+    history_count = len(st.session_state.get("query_history", []))
+    if history_count:
+        st.markdown(
+            f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:0.4rem;">'
+            f'🕐 <b>{history_count}</b> quer{"y" if history_count == 1 else "ies"} in session</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("🗑 Clear History", use_container_width=True):
+            st.session_state["query_history"] = []
+            st.rerun()
+
+    st.markdown('<hr style="margin:0.8rem 0;">', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.72rem;color:#8b949e;line-height:1.6;">'
         '🔒 <b>100% Local Processing</b><br>'
@@ -553,6 +567,9 @@ if submitted and not query.strip():
 
 # ─── V-RAG Pipeline ───────────────────────────────────────────────────────────
 if submitted and query.strip():
+
+    if "query_history" not in st.session_state:
+        st.session_state["query_history"] = []
 
     active_specialty = st.session_state.get("specialty", "General Ophthalmology")
 
@@ -802,3 +819,143 @@ if submitted and query.strip():
                     st.image(url, use_container_width=True)
             st.caption(f"Web Reference: {primary_condition} — Source: Clinical Web Search")
             st.divider()
+
+    # ── Save current result to session history ─────────────────────────────────
+    _ts = verdicts[0]["timestamp"] if verdicts else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state["query_history"].insert(0, {
+        "query":          query,
+        "answer_body":    answer_body,
+        "top_verdict":    top_verdict,
+        "citations":      [
+            {
+                "filename": c.get("metadata", {}).get("filename", "?"),
+                "page":     c.get("metadata", {}).get("Page_Number",
+                            c.get("metadata", {}).get("page", "?")),
+                "proto":    c.get("metadata", {}).get("Protocol_Name")
+                            or _protocol_label(c.get("metadata", {}).get("filename", "?")),
+                "year":     c.get("metadata", {}).get("doc_year",
+                            c.get("metadata", {}).get("statute_year", "—")),
+            }
+            for c in results
+        ],
+        "hard_stop_name":     hard_stop_rule["name"]     if hard_stop_rule else None,
+        "hard_stop_severity": hard_stop_rule["severity"] if hard_stop_rule else None,
+        "img_urls":       img_urls,
+        "timestamp":      _ts,
+        "view_mode":      view_mode,
+        "specialty":      active_specialty,
+    })
+    # Keep at most 10 entries to avoid unbounded session growth
+    st.session_state["query_history"] = st.session_state["query_history"][:10]
+
+    # ── Previous Queries ───────────────────────────────────────────────────────
+    past = st.session_state["query_history"][1:]   # [0] is the one just rendered
+    if past:
+        st.markdown("---")
+        st.markdown(
+            '<span style="color:#8b949e;font-size:0.73rem;font-weight:700;'
+            'letter-spacing:0.12em;text-transform:uppercase;">🕐 Previous Queries</span>',
+            unsafe_allow_html=True,
+        )
+
+        _verdict_color = {
+            "ENTAILED":      "#238636",
+            "NEUTRAL":       "#9e6a03",
+            "CONTRADICTION": "#da3633",
+        }
+        _verdict_bg = {
+            "ENTAILED":      "#1a4731",
+            "NEUTRAL":       "#2d2200",
+            "CONTRADICTION": "#3d1515",
+        }
+
+        for idx, entry in enumerate(past):
+            v        = entry["top_verdict"]
+            status   = v.get("status", "NEUTRAL")
+            emoji    = v.get("emoji", "⚠️")
+            conf     = v.get("confidence", 0)
+            q_short  = entry["query"][:80] + ("…" if len(entry["query"]) > 80 else "")
+            bg       = _verdict_bg.get(status,  "#161b22")
+            col      = _verdict_color.get(status, "#8b949e")
+            hs_badge = (
+                f'&nbsp;<span style="background:#2d0a0a;color:#f85149;'
+                f'border:1px solid #da3633;border-radius:10px;'
+                f'padding:1px 7px;font-size:0.7rem;font-weight:700;">'
+                f'⚠️ HARD-STOP</span>'
+                if entry.get("hard_stop_name") else ""
+            )
+
+            with st.expander(
+                f"{emoji}  {q_short}    [{entry['timestamp']}]",
+                expanded=False,
+            ):
+                # Mini verdict badge
+                st.markdown(
+                    f'<div style="background:{bg};border:1px solid {col};'
+                    f'border-radius:6px;padding:0.5rem 1rem;margin-bottom:0.6rem;'
+                    f'font-size:0.85rem;font-weight:700;color:{col};">'
+                    f'{emoji}&nbsp;&nbsp;{status}&nbsp;&nbsp;'
+                    f'<span style="font-weight:400;font-size:0.78rem;">'
+                    f'Confidence: {conf}%</span>{hs_badge}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Hard-stop flag
+                if entry.get("hard_stop_name"):
+                    st.markdown(
+                        f'<div style="background:#2d0a0a;border-left:3px solid #f85149;'
+                        f'border-radius:4px;padding:0.4rem 0.8rem;font-size:0.8rem;'
+                        f'color:#ffa198;margin-bottom:0.5rem;">'
+                        f'🛑 <b>Hard-Stop Rule:</b> {entry["hard_stop_name"]}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                # Answer
+                st.markdown(
+                    f'<span style="color:#8b949e;font-size:0.72rem;font-weight:700;'
+                    f'text-transform:uppercase;letter-spacing:0.1em;">Answer</span>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(entry["answer_body"])
+
+                # Citations
+                if entry["citations"]:
+                    st.markdown(
+                        '<span style="color:#58a6ff;font-size:0.72rem;font-weight:700;'
+                        'text-transform:uppercase;letter-spacing:0.1em;">📎 Sources</span>',
+                        unsafe_allow_html=True,
+                    )
+                    for i, cit in enumerate(entry["citations"], 1):
+                        st.markdown(
+                            f'<div style="background:#161b22;border:1px solid #30363d;'
+                            f'border-left:3px solid #58a6ff;border-radius:4px;'
+                            f'padding:0.35rem 0.7rem;margin:0.25rem 0;font-size:0.79rem;">'
+                            f'<b style="color:#58a6ff;">[{i}]</b>'
+                            f'&nbsp;<span style="color:#e6edf3;">{cit["filename"]}</span>'
+                            f'&nbsp;<span style="color:#8b949e;">·</span>'
+                            f'&nbsp;<span style="color:#c9d1d9;">Page <b>{cit["page"]}</b></span>'
+                            f'&nbsp;<span style="color:#8b949e;">· {cit["proto"]} · {cit["year"]}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # Images (if any were saved)
+                if entry.get("img_urls"):
+                    st.markdown(
+                        '<span style="color:#58a6ff;font-size:0.72rem;font-weight:700;'
+                        'text-transform:uppercase;letter-spacing:0.1em;">🌐 Images</span>',
+                        unsafe_allow_html=True,
+                    )
+                    img_c = st.columns(len(entry["img_urls"]))
+                    for col_w, url in zip(img_c, entry["img_urls"]):
+                        with col_w:
+                            st.image(url, use_container_width=True)
+
+                st.markdown(
+                    f'<div style="font-size:0.71rem;color:#6e7681;margin-top:0.4rem;">'
+                    f'⏱ {entry["timestamp"]} · {entry["specialty"]} · {entry["view_mode"]} mode'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
