@@ -49,7 +49,6 @@ from src.generation.llm_interface import ClinicalSynthesizer
 from src.verifier                 import ClinicalAuditor
 from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
-from src.utils.visualizer         import extract_pdf_clip
 from src.utils.image_search       import get_clinical_visualization
 from src.utils.entity_extractor   import extract_disease_entity
 
@@ -136,13 +135,6 @@ html, body,
 }
 
 /* ── Direct Clip ────────────────────────────────────────────────────────── */
-.direct-clip {
-    background:#0d1117; border-left:3px solid #58a6ff;
-    padding:0.75rem 0.9rem; border-radius:0 6px 6px 0;
-    font-size:0.82rem; color:#8b949e; font-style:italic;
-    margin:0.6rem 0; max-height:130px; overflow-y:auto; line-height:1.55;
-}
-
 /* ── Section Labels ─────────────────────────────────────────────────────── */
 .section-label {
     color:#8b949e; font-size:0.73rem; font-weight:700;
@@ -627,15 +619,13 @@ if submitted and query.strip():
     with right_col:
         st.subheader("Visual Evidence")
 
-        # ── 1. NLI Confidence Score / Badge ───────────────────────────────────
+        # ── NLI Confidence Score / Badge ───────────────────────────────────────
         _conf_bar("Overall NLI Confidence", top_verdict["confidence"], top_verdict["color"])
         st.divider()
 
-        # ── 2. Web-Retrieved Clinical Image ───────────────────────────────────
-        # Fetched HERE (after pipeline closes) so text answer renders first.
-        # Wrapped in st.spinner so it doesn't appear to block the left column.
-        # SILENT FAIL: if img_url is None the entire block is absent — no
-        # broken icon, no error, no placeholder. PDF clip shifts up to fill.
+        # ── Web-Retrieved Clinical Image ───────────────────────────────────────
+        # Fetched after pipeline closes — text answer is already visible.
+        # SILENT FAIL: if img_url is None, nothing is rendered at all.
         with st.spinner("🔍 Fetching clinical reference image…"):
             img_url = get_clinical_visualization(primary_condition)
 
@@ -646,67 +636,3 @@ if submitted and query.strip():
                 use_container_width=True,
             )
             st.caption("Source: Clinical Web Search")
-            st.divider()
-        # else: nothing rendered — PDF clip naturally fills the space
-
-        # ── 3. Source PDF Ground-Truth Clip (always shown) ────────────────────
-        color_map = {"ENTAILED": "green", "NEUTRAL": "orange", "CONTRADICTION": "red"}
-
-        for i, v in enumerate(verdicts, 1):
-            m     = v["metadata"]
-            clip  = v["chunk_text"][:420].replace("\n", " ")
-            fname = m.get("filename", "Unknown")
-            pg    = m.get("Page_Number", m.get("page", "?"))
-            proto = m.get("Protocol_Name") or _protocol_label(fname)
-
-            with st.expander(
-                f"Evidence #{i} — {proto}  ·  p.{pg}",
-                expanded=(i == 1),
-            ):
-                # NLI Status Chip + per-chunk confidence
-                st.markdown(
-                    f'{_nli_chip(v["status"], v["emoji"])}'
-                    f'&nbsp;&nbsp;<span style="font-size:0.8rem;color:#8b949e;">'
-                    f'Confidence:&nbsp;<b style="color:#c9d1d9;">{v["confidence"]}%</b></span>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                # 3-way probability breakdown bars
-                for lbl, val in sorted(
-                    v["breakdown"].items(), key=lambda x: x[1], reverse=True
-                ):
-                    _conf_bar(lbl, val, color_map.get(lbl, "green"))
-
-                # ── Source PDF Clip — always local, always rendered ────────────
-                st.markdown("### Source PDF Clip")
-                try:
-                    pg_int     = int(pg) if str(pg).isdigit() else 1
-                    clip_bytes = extract_pdf_clip(fname, pg_int, v["chunk_text"][:150])
-                    if clip_bytes:
-                        st.image(
-                            clip_bytes,
-                            caption=f"Verified Protocol: {proto} (Pg {pg})",
-                            use_container_width=True,
-                        )
-                    else:
-                        st.markdown(
-                            f'<div class="direct-clip">"{clip}…"</div>',
-                            unsafe_allow_html=True,
-                        )
-                except Exception:
-                    st.markdown(
-                        f'<div class="direct-clip">"{clip}…"</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                # Source Metadata footer
-                st.markdown(
-                    f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.5rem;'
-                    f'border-top:1px solid #30363d;padding-top:0.4rem;">'
-                    f'📄&nbsp;{fname}&nbsp;·&nbsp;Page&nbsp;{pg}&nbsp;·&nbsp;'
-                    f'Protocol:&nbsp;{proto}&nbsp;·&nbsp;'
-                    f'Published:&nbsp;{m.get("doc_year", m.get("statute_year","?"))}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
