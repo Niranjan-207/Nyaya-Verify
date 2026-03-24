@@ -1,6 +1,7 @@
 import os
 from typing import List, Dict, Any
 import chromadb
+import torch
 from sentence_transformers import SentenceTransformer
 
 class ChromaDataStore:
@@ -8,7 +9,9 @@ class ChromaDataStore:
         os.makedirs(persist_directory, exist_ok=True)
         self.client = chromadb.PersistentClient(path=persist_directory)
         self.collection = self.client.get_or_create_collection(name=collection_name)
-        self.model = SentenceTransformer(model_name, device='cuda')
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[*] ChromaDataStore embedding device: {device}")
+        self.model = SentenceTransformer(model_name, device=device)
         
     def ingest(self, chunks: List[Dict[str, Any]]) -> int:
         if not chunks:

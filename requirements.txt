@@ -2,7 +2,10 @@
 torch
 torchvision
 torchaudio
+transformers
 langchain
+langchain-experimental
+langchain-huggingface
 chromadb
 sentence-transformers
 pymupdf
