@@ -27,33 +27,76 @@ class ClinicalSynthesizer:
             
         return "\n\n".join(formatted_chunks)
 
-    def generate_answer(self, query: str, chunks: List[Dict[str, Any]], conflict_payload: Dict[str, Any]) -> str:
+    def generate_answer(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+        conflict_payload: Dict[str, Any],
+        view_mode: str = "Brief",
+    ) -> str:
+        """
+        Generate a clinical answer via Ollama.
+
+        Parameters
+        ----------
+        query : str
+            The clinician's question.
+        chunks : list
+            Retrieved protocol chunks (context).
+        conflict_payload : dict
+            Output from PairwiseAuditor.detect_logic_flips().
+        view_mode : str
+            "Short"  → 3-sentence summary: primary diagnosis + 1st-line drug only.
+            "Brief"  → Full clinical protocol: etiology, dosage, contraindications,
+                       follow-up schedule.
+        """
         logic_flip_alert = ""
-        
-        # Inject warning payload natively if contradictory axioms were discovered
+
         if conflict_payload.get("ConflictFound") is True:
             prioritized = conflict_payload.get("PrioritizedChunk", {}).get("metadata", {})
-            rejected = conflict_payload.get("RejectedChunk", {}).get("metadata", {})
-            
-            doc_a = rejected.get("filename", "Unknown")
-            doc_b = prioritized.get("filename", "Unknown")
+            rejected    = conflict_payload.get("RejectedChunk",    {}).get("metadata", {})
+            doc_a            = rejected.get("filename", "Unknown")
+            doc_b            = prioritized.get("filename", "Unknown")
             year_prioritized = prioritized.get("doc_year", prioritized.get("statute_year", "Unknown"))
-
-            logic_flip_alert = f"⚠️ **CLINICAL CONFLICT DETECTED:** Contradiction found between [{doc_a}] and [{doc_b}]. Prioritizing the [{year_prioritized}] protocol."
+            logic_flip_alert = (
+                f"⚠️ **CLINICAL CONFLICT DETECTED:** Contradiction found between "
+                f"[{doc_a}] and [{doc_b}]. Prioritizing the [{year_prioritized}] protocol."
+            )
 
         context_str = self._format_context(chunks)
-        
-        system_prompt = (
-            "You are an expert Clinical AI Assistant named Medify, built for doctors and medical professionals. "
-            "You must answer the user's query STRICTLY based on the provided <context> text below. "
-            "If the answer cannot be found in the context blocks, clearly state that you do not have enough "
-            "information from the available protocols. DO NOT hallucinate, invent dosages, or use outside knowledge. "
-            "Always append the specific citation tag (e.g. '[Citation 1]') directly inline where appropriate. "
-            "Format dosages in bold (e.g. **500 mg twice daily**) and highlight critical warnings clearly."
+
+        # ── View-mode system prompt ──────────────────────────────────────────
+        _base = (
+            "You are an expert Clinical AI Assistant named Med-Verify, built for "
+            "doctors and medical professionals. Answer STRICTLY from the provided "
+            "<context>. DO NOT hallucinate, invent dosages, or use outside knowledge. "
+            "Always cite inline (e.g. '[Citation 1]'). "
+            "Format every dosage value in bold (e.g. **500 mg twice daily**) and "
+            "highlight critical warnings in bold."
         )
 
-        user_prompt = f"""
-{logic_flip_alert}
+        if view_mode == "Short":
+            mode_instruction = (
+                " RESPONSE FORMAT — SHORT: Respond in exactly 3 sentences. "
+                "Sentence 1: state the primary diagnosis or condition. "
+                "Sentence 2: state the first-line drug/intervention and its dosage. "
+                "Sentence 3: state one critical warning or monitoring parameter. "
+                "Do NOT include etiology, full protocols, or follow-up schedules."
+            )
+        else:  # "Brief" (full protocol)
+            mode_instruction = (
+                " RESPONSE FORMAT — FULL PROTOCOL: Provide a comprehensive clinical "
+                "response structured as: (1) Etiology / Pathophysiology, "
+                "(2) Diagnostic criteria, "
+                "(3) First-line and second-line treatment with exact dosages, "
+                "(4) Contraindications and drug interactions, "
+                "(5) Follow-up schedule and monitoring parameters. "
+                "Use markdown headings (##) for each section."
+            )
+
+        system_prompt = _base + mode_instruction
+
+        user_prompt = f"""{logic_flip_alert}
 
 <context>
 {context_str}
@@ -67,10 +110,9 @@ class ClinicalSynthesizer:
             model=self.model_name,
             prompt=user_prompt,
             system=system_prompt,
-            stream=False
+            stream=False,
         )
-        
-        # The logic_flip_alert is passed to prompt payload and echoed to end user interface
+
         if logic_flip_alert:
-            return logic_flip_alert + "\n\n" + response['response']
-        return response['response']
+            return logic_flip_alert + "\n\n" + response["response"]
+        return response["response"]

@@ -23,6 +23,7 @@ PHI Safety: No cloud APIs. All inference runs locally on RTX 4050.
 """
 
 import os
+import re
 import gc
 import sys
 import yaml
@@ -45,6 +46,7 @@ from src.verifier                 import ClinicalAuditor
 from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 from src.utils.visualizer         import extract_pdf_clip
+from src.utils.image_search       import get_clinical_image
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -285,6 +287,35 @@ def _conf_bar(label: str, value: float, color: str) -> None:
     )
 
 
+def _extract_primary_condition(query: str, results: list) -> str:
+    """
+    Derive the primary medical condition name for the image search.
+
+    Strategy (fully local, no external calls):
+      1. Use the filename of the highest-ranked retrieved chunk — it is named
+         after the condition (e.g. "Glaucoma.pdf" → "Glaucoma").
+      2. Fallback: first 4 words of the query after stripping common question
+         starters ("what is", "how to", "treatment for", etc.).
+
+    Returns a clean condition string suitable as a DuckDuckGo image query.
+    """
+    # Priority 1: condition name from PDF filename
+    if results:
+        raw = results[0].get("metadata", {}).get("filename", "")
+        name = os.path.splitext(os.path.basename(raw))[0]
+        # Un-slug: replace underscores/hyphens, strip trailing digits/spaces
+        name = name.replace("_", " ").replace("-", " ").strip()
+        if name:
+            return name
+
+    # Priority 2: strip filler from query
+    _FILLER = r"^(what is|what are|how to|how do|treatment for|treatment of|"      \
+              r"management of|define|explain|describe|tell me about)\s+"
+    clean = re.sub(_FILLER, "", query.strip().lower(), flags=re.IGNORECASE)
+    words = clean.split()[:4]
+    return " ".join(words).strip("?.,")
+
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
 
@@ -444,13 +475,27 @@ st.markdown("---")
 
 # ─── Query Form ───────────────────────────────────────────────────────────────
 with st.form("query_form", clear_on_submit=False):
+
+    # ── View-Mode Toggle ───────────────────────────────────────────────────────
+    view_mode = st.radio(
+        "Response depth",
+        options=["Short", "Brief"],
+        index=1,
+        horizontal=True,
+        help=(
+            "**Short** — 3-sentence summary: diagnosis + 1st-line drug + 1 warning.\n\n"
+            "**Brief** — Full clinical protocol: etiology · dosage · "
+            "contraindications · follow-up."
+        ),
+    )
+
     query = st.text_area(
         "Clinical Query",
         placeholder=(
             "e.g. What is the first-line treatment for open-angle glaucoma "
             "with IOP > 30 mmHg per ICMR guidelines?"
         ),
-        height=110,
+        height=100,
         label_visibility="collapsed",
     )
     submitted = st.form_submit_button("🔍  Verify & Analyse", use_container_width=True)
@@ -489,9 +534,9 @@ if submitted and query.strip():
         pairwise.unload()
 
         # Step 3 — Answer Generation (VRAM offloaded after)
-        st.write(f"🤖 Synthesising clinical answer via Ollama ({MODEL_NAME})…")
+        st.write(f"🤖 Synthesising clinical answer via Ollama ({MODEL_NAME}) [{view_mode} mode]…")
         synthesizer = ClinicalSynthesizer()
-        answer_raw  = synthesizer.generate_answer(query, results, conflict)
+        answer_raw  = synthesizer.generate_answer(query, results, conflict, view_mode=view_mode)
 
         answer_body = answer_raw
         if conflict.get("ConflictFound") and answer_raw.lstrip().startswith("⚠️"):
@@ -505,24 +550,34 @@ if submitted and query.strip():
         top_verdict = verifier.aggregate_verdict(verdicts)
         verifier.unload()
 
-        # Step 5 — Dosage Safety Check on best chunk
+        # Step 5 — Dosage Safety Check on highest-confidence chunk
         dosage_report = None
         if verdicts:
-            best_chunk = max(verdicts, key=lambda v: v["confidence"])
-            dosage_report = pairwise.__class__(
-            ).detect_dosage_contradiction.__func__(
-                pairwise.__class__(), best_chunk["chunk_text"], answer_body
-            ) if False else None  # Re-instantiate cheaply below
+            best_chunk   = max(verdicts, key=lambda v: v["confidence"])
             _tmp_auditor = PairwiseAuditor()
             dosage_report = _tmp_auditor.detect_dosage_contradiction(
                 best_chunk["chunk_text"], answer_body
             )
             _tmp_auditor.unload()
 
+        # Step 6 — Clinical Web Image (silent fail — None if unreachable)
+        st.write("🖼 Fetching clinical reference image…")
+        primary_condition = _extract_primary_condition(query, results)
+        clinical_image_url = get_clinical_image(primary_condition)
+
         pipe_status.update(label="✅ Pipeline Complete", state="complete", expanded=False)
 
-    # ── Source-Aware Logic Badge ───────────────────────────────────────────────
+    # ── Source-Aware Logic Badge + View-Mode Pill ─────────────────────────────
     st.markdown(_source_badge(top_verdict, verdicts), unsafe_allow_html=True)
+    _mode_color = "#238636" if view_mode == "Brief" else "#9e6a03"
+    st.markdown(
+        f'<div style="text-align:right;margin-top:-0.8rem;margin-bottom:0.6rem;">'
+        f'<span style="font-size:0.75rem;color:{_mode_color};font-weight:600;'
+        f'border:1px solid {_mode_color};border-radius:12px;padding:2px 10px;">'
+        f'{"📋 Full Protocol" if view_mode == "Brief" else "⚡ Short Summary"}'
+        f'</span></div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Dosage Safety Banner ───────────────────────────────────────────────────
     if dosage_report:
@@ -601,11 +656,27 @@ if submitted and query.strip():
             unsafe_allow_html=True,
         )
 
-        # Overall Confidence Meter
+        # ── 1. Overall NLI Confidence Meter ───────────────────────────────────
         _conf_bar("Overall NLI Confidence", top_verdict["confidence"], top_verdict["color"])
         st.markdown("---")
 
-        # Per-Chunk Evidence Cards
+        # ── 2. Web Clinical Image (silent fail — skipped entirely if None) ────
+        if clinical_image_url:
+            st.markdown(
+                '<span class="section-label" style="color:#58a6ff;">🌐 Clinical Reference Image</span>',
+                unsafe_allow_html=True,
+            )
+            st.image(
+                clinical_image_url,
+                caption=f"🔍 {primary_condition} — ophthalmology reference",
+                use_container_width=True,
+            )
+            st.markdown("---")
+        # If clinical_image_url is None: element is skipped, PDF clip shifts up naturally
+
+        # ── 3. Per-Chunk Evidence Cards (PDF Clip always shown) ───────────────
+        color_map = {"ENTAILED": "green", "NEUTRAL": "orange", "CONTRADICTION": "red"}
+
         for i, v in enumerate(verdicts, 1):
             m     = v["metadata"]
             clip  = v["chunk_text"][:420].replace("\n", " ")
@@ -617,7 +688,7 @@ if submitted and query.strip():
                 f"Evidence #{i} — {proto}  ·  p.{pg}",
                 expanded=(i == 1),
             ):
-                # NLI Status Chip
+                # NLI Status Chip + confidence
                 st.markdown(
                     f'{_nli_chip(v["status"], v["emoji"])}'
                     f'&nbsp;&nbsp;<span style="font-size:0.8rem;color:#8b949e;">'
@@ -626,28 +697,28 @@ if submitted and query.strip():
                 )
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # 3-way NLI probability breakdown
-                color_map = {"ENTAILED": "green", "NEUTRAL": "orange", "CONTRADICTION": "red"}
-                for lbl, val in sorted(v["breakdown"].items(), key=lambda x: x[1], reverse=True):
+                # 3-way probability breakdown bars
+                for lbl, val in sorted(
+                    v["breakdown"].items(), key=lambda x: x[1], reverse=True
+                ):
                     _conf_bar(lbl, val, color_map.get(lbl, "green"))
 
-                # ── Direct PDF Clip (Visual Evidence) ─────────────────────────
+                # ── PDF Clip (always rendered — PyMuPDF local) ─────────────────
+                st.markdown(
+                    '<span class="section-label" style="margin-top:0.7rem;">'
+                    '📄 Direct PDF Clip</span>',
+                    unsafe_allow_html=True,
+                )
                 try:
                     pg_int     = int(pg) if str(pg).isdigit() else 1
                     clip_bytes = extract_pdf_clip(fname, pg_int, v["chunk_text"][:150])
                     if clip_bytes:
-                        st.markdown(
-                            '<span class="section-label" style="margin-top:0.6rem;">'
-                            '🖼 Direct PDF Clip</span>',
-                            unsafe_allow_html=True,
-                        )
                         st.image(
                             clip_bytes,
                             caption=f"{proto}  ·  p.{pg}",
                             use_container_width=True,
                         )
                     else:
-                        # Fallback: text clip
                         st.markdown(
                             f'<div class="direct-clip">"{clip}…"</div>',
                             unsafe_allow_html=True,

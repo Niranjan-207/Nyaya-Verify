@@ -9,6 +9,7 @@ langchain-huggingface
 chromadb
 sentence-transformers
 pymupdf
+duckduckgo-search
 ollama
 ragas
 pyyaml
