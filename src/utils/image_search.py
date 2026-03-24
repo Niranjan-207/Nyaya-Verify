@@ -32,9 +32,12 @@ _URL_TIMEOUT = 4
 _SEARCH_SUFFIX = "clinical ophthalmology finding fundus slit-lamp"
 
 
-def get_clinical_image(medical_term: str) -> Optional[str]:
+def get_clinical_visualization(medical_term: str) -> Optional[str]:
     """
     Return the top-1 DuckDuckGo Images URL for a clinical ophthalmology term.
+
+    Canonical name used throughout the codebase. ``get_clinical_image`` is
+    kept as a backwards-compatible alias.
 
     Parameters
     ----------
@@ -48,9 +51,9 @@ def get_clinical_image(medical_term: str) -> Optional[str]:
 
     Examples
     --------
-    >>> url = get_clinical_image("open-angle glaucoma")
+    >>> url = get_clinical_visualization("open-angle glaucoma")
     >>> if url:
-    ...     st.image(url)   # show it
+    ...     st.image(url, caption="Web Reference: Open-Angle Glaucoma")
     # If None, skip entirely — no placeholder, no error message
     """
     if not medical_term or not medical_term.strip():
@@ -82,6 +85,10 @@ def get_clinical_image(medical_term: str) -> Optional[str]:
             return url
 
     return None
+
+
+# Backwards-compatible alias — existing callers need not change
+get_clinical_image = get_clinical_visualization
 
 
 # ---------------------------------------------------------------------------

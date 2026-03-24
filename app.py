@@ -17,7 +17,11 @@ V-RAG Pipeline
   2. PairwiseAuditor     → Cross-protocol clinical contradiction detection
   3. ClinicalSynthesizer → Ollama llama3.1:8b answer (VRAM offloaded after)
   4. ClinicalAuditor     → DeBERTa-v3-large NLI verification (VRAM offloaded)
-  5. Visualizer          → PyMuPDF Direct PDF Clip for Evidence Vault
+  5. PairwiseAuditor     → Dosage safety check on best chunk
+  [Pipeline closes — text renders]
+  6. EntityExtractor     → Primary disease entity extracted from query
+  7. ImageSearch (async spinner) → DuckDuckGo clinical web image (silent fail)
+  8. Visualizer          → PyMuPDF Direct PDF Clip for Evidence Vault
 
 PHI Safety: No cloud APIs. All inference runs locally on RTX 4050.
 """
@@ -46,7 +50,8 @@ from src.verifier                 import ClinicalAuditor
 from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 from src.utils.visualizer         import extract_pdf_clip
-from src.utils.image_search       import get_clinical_image
+from src.utils.image_search       import get_clinical_visualization
+from src.utils.entity_extractor   import extract_disease_entity
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -285,35 +290,6 @@ def _conf_bar(label: str, value: float, color: str) -> None:
         f'text-align:right;margin-top:-0.45rem;">{value:.1f}%</div>',
         unsafe_allow_html=True,
     )
-
-
-def _extract_primary_condition(query: str, results: list) -> str:
-    """
-    Derive the primary medical condition name for the image search.
-
-    Strategy (fully local, no external calls):
-      1. Use the filename of the highest-ranked retrieved chunk — it is named
-         after the condition (e.g. "Glaucoma.pdf" → "Glaucoma").
-      2. Fallback: first 4 words of the query after stripping common question
-         starters ("what is", "how to", "treatment for", etc.).
-
-    Returns a clean condition string suitable as a DuckDuckGo image query.
-    """
-    # Priority 1: condition name from PDF filename
-    if results:
-        raw = results[0].get("metadata", {}).get("filename", "")
-        name = os.path.splitext(os.path.basename(raw))[0]
-        # Un-slug: replace underscores/hyphens, strip trailing digits/spaces
-        name = name.replace("_", " ").replace("-", " ").strip()
-        if name:
-            return name
-
-    # Priority 2: strip filler from query
-    _FILLER = r"^(what is|what are|how to|how do|treatment for|treatment of|"      \
-              r"management of|define|explain|describe|tell me about)\s+"
-    clean = re.sub(_FILLER, "", query.strip().lower(), flags=re.IGNORECASE)
-    words = clean.split()[:4]
-    return " ".join(words).strip("?.,")
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -560,12 +536,10 @@ if submitted and query.strip():
             )
             _tmp_auditor.unload()
 
-        # Step 6 — Clinical Web Image (silent fail — None if unreachable)
-        st.write("🖼 Fetching clinical reference image…")
-        primary_condition = _extract_primary_condition(query, results)
-        clinical_image_url = get_clinical_image(primary_condition)
-
         pipe_status.update(label="✅ Pipeline Complete", state="complete", expanded=False)
+
+    # Entity extracted from query (used later in Evidence Vault image fetch)
+    primary_condition = extract_disease_entity(query, results)
 
     # ── Source-Aware Logic Badge + View-Mode Pill ─────────────────────────────
     st.markdown(_source_badge(top_verdict, verdicts), unsafe_allow_html=True)
@@ -651,30 +625,31 @@ if submitted and query.strip():
 
     # ── RIGHT PANE (40%) — Evidence Vault ─────────────────────────────────────
     with right_col:
-        st.markdown(
-            '<span class="section-label-blue">🔐 Evidence Vault</span>',
-            unsafe_allow_html=True,
-        )
+        st.subheader("Visual Evidence")
 
-        # ── 1. Overall NLI Confidence Meter ───────────────────────────────────
+        # ── 1. NLI Confidence Score / Badge ───────────────────────────────────
         _conf_bar("Overall NLI Confidence", top_verdict["confidence"], top_verdict["color"])
-        st.markdown("---")
+        st.divider()
 
-        # ── 2. Web Clinical Image (silent fail — skipped entirely if None) ────
-        if clinical_image_url:
-            st.markdown(
-                '<span class="section-label" style="color:#58a6ff;">🌐 Clinical Reference Image</span>',
-                unsafe_allow_html=True,
-            )
+        # ── 2. Web-Retrieved Clinical Image ───────────────────────────────────
+        # Fetched HERE (after pipeline closes) so text answer renders first.
+        # Wrapped in st.spinner so it doesn't appear to block the left column.
+        # SILENT FAIL: if img_url is None the entire block is absent — no
+        # broken icon, no error, no placeholder. PDF clip shifts up to fill.
+        with st.spinner("🔍 Fetching clinical reference image…"):
+            img_url = get_clinical_visualization(primary_condition)
+
+        if img_url:
             st.image(
-                clinical_image_url,
-                caption=f"🔍 {primary_condition} — ophthalmology reference",
+                img_url,
+                caption=f"Web Reference: {primary_condition}",
                 use_container_width=True,
             )
-            st.markdown("---")
-        # If clinical_image_url is None: element is skipped, PDF clip shifts up naturally
+            st.caption("Source: Clinical Web Search")
+            st.divider()
+        # else: nothing rendered — PDF clip naturally fills the space
 
-        # ── 3. Per-Chunk Evidence Cards (PDF Clip always shown) ───────────────
+        # ── 3. Source PDF Ground-Truth Clip (always shown) ────────────────────
         color_map = {"ENTAILED": "green", "NEUTRAL": "orange", "CONTRADICTION": "red"}
 
         for i, v in enumerate(verdicts, 1):
@@ -688,7 +663,7 @@ if submitted and query.strip():
                 f"Evidence #{i} — {proto}  ·  p.{pg}",
                 expanded=(i == 1),
             ):
-                # NLI Status Chip + confidence
+                # NLI Status Chip + per-chunk confidence
                 st.markdown(
                     f'{_nli_chip(v["status"], v["emoji"])}'
                     f'&nbsp;&nbsp;<span style="font-size:0.8rem;color:#8b949e;">'
@@ -703,19 +678,15 @@ if submitted and query.strip():
                 ):
                     _conf_bar(lbl, val, color_map.get(lbl, "green"))
 
-                # ── PDF Clip (always rendered — PyMuPDF local) ─────────────────
-                st.markdown(
-                    '<span class="section-label" style="margin-top:0.7rem;">'
-                    '📄 Direct PDF Clip</span>',
-                    unsafe_allow_html=True,
-                )
+                # ── Source PDF Clip — always local, always rendered ────────────
+                st.markdown("### Source PDF Clip")
                 try:
                     pg_int     = int(pg) if str(pg).isdigit() else 1
                     clip_bytes = extract_pdf_clip(fname, pg_int, v["chunk_text"][:150])
                     if clip_bytes:
                         st.image(
                             clip_bytes,
-                            caption=f"{proto}  ·  p.{pg}",
+                            caption=f"Verified Protocol: {proto} (Pg {pg})",
                             use_container_width=True,
                         )
                     else:
