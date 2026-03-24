@@ -136,13 +136,6 @@ html, body,
     margin:0.6rem 0; max-height:130px; overflow-y:auto; line-height:1.55;
 }
 
-/* ── Test-Case Pills ────────────────────────────────────────────────────── */
-.testcase-pill {
-    display:inline-block; background:#161b22; border:1px solid #30363d;
-    border-radius:20px; padding:4px 14px; font-size:0.8rem; color:#8b949e;
-    cursor:pointer; margin:3px;
-}
-
 /* ── Section Labels ─────────────────────────────────────────────────────── */
 .section-label {
     color:#8b949e; font-size:0.73rem; font-weight:700;
@@ -449,40 +442,10 @@ st.markdown(
 st.markdown("---")
 
 
-# ─── Hackathon Test Cases ──────────────────────────────────────────────────────
-st.markdown(
-    '<span class="section-label">⚡ Quick Verify — Ophthalmology Test Cases</span>',
-    unsafe_allow_html=True,
-)
-tc1, tc2, tc3 = st.columns(3)
-_TC = {
-    "IOP 32 mmHg": "What is the treatment protocol for a patient with Intraocular Pressure (IOP) of 32 mmHg?",
-    "Sugar for eye surgery": "What is the acceptable blood sugar level (FBS and RBS) for a patient undergoing eye surgery?",
-    "Post-op steroid schedule": "What is the recommended post-operative steroid eye drop schedule after cataract surgery?",
-}
-with tc1:
-    if st.button("👁 IOP 32 mmHg", use_container_width=True):
-        st.session_state["prefill_query"] = _TC["IOP 32 mmHg"]
-        st.rerun()
-with tc2:
-    if st.button("🩸 Sugar for eye surgery", use_container_width=True):
-        st.session_state["prefill_query"] = _TC["Sugar for eye surgery"]
-        st.rerun()
-with tc3:
-    if st.button("💊 Post-op steroid schedule", use_container_width=True):
-        st.session_state["prefill_query"] = _TC["Post-op steroid schedule"]
-        st.rerun()
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-
 # ─── Query Form ───────────────────────────────────────────────────────────────
-_prefill = st.session_state.pop("prefill_query", "")
-
 with st.form("query_form", clear_on_submit=False):
     query = st.text_area(
         "Clinical Query",
-        value=_prefill,
         placeholder=(
             "e.g. What is the first-line treatment for open-angle glaucoma "
             "with IOP > 30 mmHg per ICMR guidelines?"
