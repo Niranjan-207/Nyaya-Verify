@@ -27,3 +27,4 @@ data/input_pdfs/
 # Environment
 .env
 *.gguf
+CLAUDE_BRAIN.md

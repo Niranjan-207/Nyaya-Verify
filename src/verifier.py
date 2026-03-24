@@ -3,42 +3,50 @@ src/verifier.py — ClinicalAuditor
 ==================================
 Formal Natural Language Inference (NLI) pipeline for answer verification.
 
-  Premise    = retrieved PDF chunk  (Ground Truth)
-  Hypothesis = AI-generated answer  (to be verified)
+  Premise    = retrieved PDF / protocol chunk  (Ground Truth)
+  Hypothesis = AI-generated answer             (to be verified)
 
 3-Tier Classification
 ---------------------
-  ENTAILED      → answer is logically proven by the PDF chunk         (Green ✅)
-  CONTRADICTION → answer directly conflicts with the PDF chunk        (Red   🔴)
-  NEUTRAL       → answer contains info not found in the PDF chunk     (Yellow ⚠️)
+  ENTAILED      → answer is logically proven by the source chunk      (Green ✅)
+  CONTRADICTION → answer directly conflicts with the source chunk     (Red   🔴)
+  NEUTRAL       → answer contains info not found in the source chunk  (Yellow ⚠️)
 
 Confidence
 ----------
   Softmax probability of the dominant label, expressed as a percentage.
 
+Model
+-----
+  cross-encoder/nli-deberta-v3-large  (sentence-transformers CrossEncoder)
+  — Same family as PairwiseAuditor (nli-deberta-v3-small) but larger model
+    for higher accuracy on answer-level verification.
+  — Downloaded via sentence-transformers; no HuggingFace Hub token required.
+  — Label index order: 0 = contradiction, 1 = entailment, 2 = neutral
+
 VRAM Note
 ---------
-  Model is loaded in fp16 (~430 MB) so it can coexist with Ollama on
-  a 6 GB GPU (RTX 4050).  Always call .unload() when done to free VRAM
-  before the next heavy process takes over.
+  CrossEncoder auto-selects CUDA when available. Call .unload() immediately
+  after use so Ollama can reclaim VRAM before next heavy process.
 """
 
 import gc
 import datetime
 import torch
 from typing import List, Dict, Any
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sentence_transformers.cross_encoder import CrossEncoder
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL_ID = "MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli"
+MODEL_ID = "cross-encoder/nli-deberta-v3-large"
 
-# Canonical 3-tier statuses
-_NLI_TO_STATUS: Dict[str, str] = {
-    "entailment":    "ENTAILED",
-    "neutral":       "NEUTRAL",
-    "contradiction": "CONTRADICTION",
+# cross-encoder/nli-deberta-v3-* label index mapping
+# (matches the comment in nli_judge.py: "Contradiction → Index 0")
+_IDX_TO_STATUS: Dict[int, str] = {
+    0: "CONTRADICTION",
+    1: "ENTAILED",
+    2: "NEUTRAL",
 }
 
 _STATUS_EMOJI: Dict[str, str] = {
@@ -65,45 +73,30 @@ _STATUS_COLOR: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 class ClinicalAuditor:
     """
-    Wraps MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli as a direct NLI
-    sequence-pair classifier.
+    Wraps cross-encoder/nli-deberta-v3-large as a sequence-pair NLI classifier.
+    Uses sentence_transformers.CrossEncoder — same API as PairwiseAuditor,
+    no HuggingFace Hub token required.
 
     Usage
     -----
         auditor  = ClinicalAuditor()
         verdicts = auditor.verify_answer(answer_text, retrieved_chunks)
         summary  = auditor.aggregate_verdict(verdicts)
-        auditor.unload()          # free VRAM before Ollama takes over
+        auditor.unload()   # release VRAM before Ollama takes over
     """
 
     def __init__(self) -> None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype  = torch.float16 if device == "cuda" else torch.float32
-        print(f"[*] ClinicalAuditor loading {MODEL_ID} on {device} "
-              f"({'fp16' if dtype == torch.float16 else 'fp32'})…")
-
-        self.device    = device
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        self.model     = AutoModelForSequenceClassification.from_pretrained(
-            MODEL_ID, torch_dtype=dtype
-        )
-        self.model.to(self.device)
-        self.model.eval()
-
-        # Build label-index → canonical status map from model config
-        # (guards against version drift in id2label ordering)
-        self._idx_to_status: Dict[int, str] = {
-            idx: _NLI_TO_STATUS.get(lab.lower(), "NEUTRAL")
-            for idx, lab in self.model.config.id2label.items()
-        }
+        print(f"[*] ClinicalAuditor loading {MODEL_ID} on {device}…")
+        self.device = device
+        self.model  = CrossEncoder(MODEL_ID, device=device)
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
-    @torch.no_grad()
     def _nli_pair(self, premise: str, hypothesis: str) -> Dict[str, Any]:
         """
-        Single NLI forward pass.
+        Single NLI forward pass via CrossEncoder.
 
         Returns
         -------
@@ -114,28 +107,18 @@ class ClinicalAuditor:
                            "CONTRADICTION": float}
         }
         """
-        enc = self.tokenizer(
-            premise,
-            hypothesis,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-            padding=True,
-        )
-        enc    = {k: v.to(self.device) for k, v in enc.items()}
-        logits = self.model(**enc).logits
-
-        # Cast to float32 before softmax (safe even if model is fp16)
-        probs  = torch.softmax(logits.float(), dim=-1)[0].cpu()
+        # CrossEncoder.predict returns raw logits; convert to probabilities
+        raw     = self.model.predict([(premise, hypothesis)])
+        probs   = torch.softmax(torch.tensor(raw), dim=1).numpy()[0]
 
         top_idx    = int(probs.argmax())
-        status     = self._idx_to_status.get(top_idx, "NEUTRAL")
+        status     = _IDX_TO_STATUS.get(top_idx, "NEUTRAL")
         confidence = round(float(probs[top_idx]) * 100, 1)
 
-        breakdown: Dict[str, float] = {}
-        for idx, st in self._idx_to_status.items():
-            breakdown[st] = round(float(probs[idx]) * 100, 1)
-
+        breakdown: Dict[str, float] = {
+            _IDX_TO_STATUS[i]: round(float(p) * 100, 1)
+            for i, p in enumerate(probs)
+        }
         return {"status": status, "confidence": confidence,
                 "breakdown": breakdown}
 
@@ -152,7 +135,7 @@ class ClinicalAuditor:
           premise   = chunk["text"]
           hypothesis = answer
 
-        Returns a list of verdict dicts (one per chunk), each containing:
+        Returns a list of verdict dicts (one per chunk) each containing:
           status, confidence, breakdown, emoji, color, label,
           chunk_text, metadata, timestamp
         """
@@ -187,9 +170,6 @@ class ClinicalAuditor:
           • Any CONTRADICTION present  → overall = CONTRADICTION
           • All ENTAILED               → overall = ENTAILED
           • Otherwise                  → overall = NEUTRAL
-
-        Returns a summary dict with status, confidence (average),
-        emoji, color, and display label.
         """
         if not verdicts:
             return {
@@ -221,12 +201,11 @@ class ClinicalAuditor:
 
     def unload(self) -> None:
         """
-        Explicitly delete the model + tokenizer and clear the CUDA cache.
+        Delete the CrossEncoder and clear CUDA cache.
         Call this immediately after verification so Ollama can reclaim VRAM.
         """
-        for attr in ("model", "tokenizer"):
-            if hasattr(self, attr):
-                delattr(self, attr)
+        if hasattr(self, "model"):
+            del self.model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

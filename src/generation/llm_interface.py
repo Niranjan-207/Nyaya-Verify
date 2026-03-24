@@ -9,7 +9,7 @@ with open(_config_path, 'r') as f:
 model_name_default = _config.get('model_name', 'llama3.2:3b')
 from typing import List, Dict, Any
 
-class LegalSynthesizer:
+class ClinicalSynthesizer:
     def __init__(self, model_name=model_name_default):
         self.model_name = model_name
         self.client = ollama.Client()
@@ -20,7 +20,7 @@ class LegalSynthesizer:
             meta = chunk.get("metadata", {})
             filename = meta.get("filename", "Unknown")
             page = meta.get("page", "Unknown")
-            year = meta.get("statute_year", "Unknown")
+            year = meta.get("doc_year", meta.get("statute_year", "Unknown"))
             
             c_text = f"[Citation {i}: {filename} (Year: {year}), Page {page}]\n{chunk['text']}"
             formatted_chunks.append(c_text)
@@ -37,18 +37,19 @@ class LegalSynthesizer:
             
             doc_a = rejected.get("filename", "Unknown")
             doc_b = prioritized.get("filename", "Unknown")
-            year_prioritized = prioritized.get("statute_year", "Unknown")
-            
-            logic_flip_alert = f"⚠️ **LOGIC FLIP DETECTED:** Contradiction found between [{doc_a}] and [{doc_b}]. Prioritizing the [{year_prioritized}] mandate."
+            year_prioritized = prioritized.get("doc_year", prioritized.get("statute_year", "Unknown"))
+
+            logic_flip_alert = f"⚠️ **CLINICAL CONFLICT DETECTED:** Contradiction found between [{doc_a}] and [{doc_b}]. Prioritizing the [{year_prioritized}] protocol."
 
         context_str = self._format_context(chunks)
         
         system_prompt = (
-            "You are an expert Indian Legal AI Assistant named Nyaya-Verify. "
+            "You are an expert Clinical AI Assistant named Medify, built for doctors and medical professionals. "
             "You must answer the user's query STRICTLY based on the provided <context> text below. "
             "If the answer cannot be found in the context blocks, clearly state that you do not have enough "
-            "information. DO NOT hallucinate, invent precedents, or use outside knowledge. "
-            "Always append the specific citation tag (e.g. '[Citation 1]') directly inline where appropriate."
+            "information from the available protocols. DO NOT hallucinate, invent dosages, or use outside knowledge. "
+            "Always append the specific citation tag (e.g. '[Citation 1]') directly inline where appropriate. "
+            "Format dosages in bold (e.g. **500 mg twice daily**) and highlight critical warnings clearly."
         )
 
         user_prompt = f"""
