@@ -99,6 +99,21 @@ class ClinicalSynthesizer:
             "A confident-sounding wrong answer is more dangerous than an explicit "
             "'not found'. Clinicians depend on this accuracy for patient safety.\n\n"
 
+            # ── HARD CONSTRAINT 4: Paediatric Weight-Based Dosing ───────────
+            "HARD CONSTRAINT 4 — PAEDIATRIC WEIGHT-BASED DOSING:\n"
+            "If the query mentions a patient weight (kg) OR identifies the patient "
+            "as a child, infant, neonate, or paediatric case, you are STRICTLY "
+            "FORBIDDEN from providing, inferring, or scaling an adult flat dose. "
+            "Weight-based dosing (mg/kg) is MANDATORY for all paediatric patients. "
+            "If the source PDF does NOT explicitly state a mg/kg dose for the drug "
+            "and route in question, you MUST respond with exactly this phrase:\n"
+            "'⚠️ Safety Warning: Weight-based dosing (15 mg/kg) is required but "
+            "not found in current source. DO NOT use adult tablets without "
+            "paediatric dose calculation.'\n"
+            "You MUST NOT extrapolate, divide, or estimate an adult dose for a "
+            "child based on weight fractions — this constitutes a patient safety "
+            "violation. Only state a dose if it appears explicitly in the PDF.\n\n"
+
             # ── Citation and formatting rules ────────────────────────────────
             "CITATION RULE: Always append the specific citation tag inline "
             "(e.g. '[Citation 1]') immediately after any clinical claim.\n"

@@ -43,7 +43,12 @@ MODEL_NAME = _cfg.get("model_name", "llama3.1:8b")
 
 # ─── Imports ──────────────────────────────────────────────────────────────────
 from src.retrieval.vector_store   import ChromaDataStore
-from src.audit.nli_judge          import PairwiseAuditor, check_contraindication_hardstop
+from src.audit.nli_judge          import (
+    PairwiseAuditor,
+    check_contraindication_hardstop,
+    check_pediatric_dose_hardstop,
+    extract_pediatric_context,
+)
 from src.generation.llm_interface import ClinicalSynthesizer
 from src.verifier                 import ClinicalAuditor
 from src.ingestion.pdf_parser     import extract_text_with_metadata
@@ -237,6 +242,45 @@ hr { border-color:#30363d !important; }
     0%   { border-left-color: #f85149; box-shadow: 0 0 0 0 rgba(248,81,73,0.4); }
     50%  { border-left-color: #ff7b72; box-shadow: 0 0 0 6px rgba(248,81,73,0); }
     100% { border-left-color: #f85149; box-shadow: 0 0 0 0 rgba(248,81,73,0); }
+}
+
+/* ── Paediatric Safety Alert ─────────────────────────────────────────────── */
+.paediatric-alert {
+    background: #1a1200;
+    border: 2px solid #f0883e;
+    border-left: 6px solid #f0883e;
+    border-radius: 8px;
+    padding: 1.1rem 1.4rem;
+    margin: 0.8rem 0 1rem;
+    animation: pulse-amber 2s infinite;
+}
+.paediatric-alert-title {
+    color: #f0883e;
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+}
+.paediatric-alert-body {
+    color: #ffa657;
+    font-size: 0.88rem;
+    margin-top: 0.4rem;
+    line-height: 1.65;
+}
+.paediatric-warning {
+    background: #1a1200;
+    border: 1px solid #d29922;
+    border-left: 5px solid #d29922;
+    border-radius: 8px;
+    padding: 0.9rem 1.2rem;
+    margin: 0.6rem 0;
+    font-size: 0.86rem;
+    color: #e3b341;
+    line-height: 1.65;
+}
+@keyframes pulse-amber {
+    0%   { border-left-color: #f0883e; box-shadow: 0 0 0 0 rgba(240,136,62,0.4); }
+    50%  { border-left-color: #ffa657; box-shadow: 0 0 0 6px rgba(240,136,62,0); }
+    100% { border-left-color: #f0883e; box-shadow: 0 0 0 0 rgba(240,136,62,0); }
 }
 
 /* ── Correct Protocol Override ───────────────────────────────────────────── */
@@ -680,11 +724,12 @@ if submitted and query.strip():
             )
             _tmp_auditor.unload()
 
-        # Step 6 — Hard-Stop Contraindication Check (zero-latency rule engine)
-        st.write("🛡 Running contraindication hard-stop safety check…")
+        # Step 6 — Hard-Stop Safety Checks (zero-latency rule engine)
+        st.write("🛡 Running contraindication & paediatric safety checks…")
+
+        # 6a — Drug/symptom contraindication (existing)
         hard_stop_rule = check_contraindication_hardstop(query, answer_body)
         if hard_stop_rule:
-            # Force the NLI verdict to CONTRADICTION regardless of model score
             top_verdict = {
                 "status":     "CONTRADICTION",
                 "confidence": 99.0,
@@ -693,10 +738,79 @@ if submitted and query.strip():
                 "label":      "CONTRADICTION DETECTED",
             }
 
+        # 6b — Paediatric weight-based dose override (new)
+        paed_rule = check_pediatric_dose_hardstop(query, answer_body)
+        if paed_rule and paed_rule["severity"] == "CRITICAL":
+            # dose > weight × 20 → hard CONTRADICTION regardless of NLI
+            top_verdict = {
+                "status":     "CONTRADICTION",
+                "confidence": 99.0,
+                "emoji":      "🔴",
+                "color":      "red",
+                "label":      "CONTRADICTION DETECTED",
+            }
+        # severity == "WARNING" (dose > weight × 15 but ≤ 20) leaves NLI intact;
+        # amber banner is shown in the UI but does not override the verdict.
+
         pipe_status.update(label="✅ Pipeline Complete", state="complete", expanded=False)
 
     # Entity extracted from query (used later in Evidence Vault image fetch)
     primary_condition = extract_disease_entity(query, results)
+
+    # ── Paediatric Context Bar (shown whenever a weight is detected) ──────────
+    _paed_ctx = extract_pediatric_context(query, answer_body)
+    if _paed_ctx["is_paediatric"] and _paed_ctx["weight_kg"]:
+        _w   = _paed_ctx["weight_kg"]
+        _d   = _paed_ctx["dose_mg"]
+        _bar_color = "#f0883e" if paed_rule else "#3fb950"
+        _dose_txt  = (
+            f"&nbsp;·&nbsp; Proposed dose detected: <b>{_d:.0f} mg</b>"
+            if _d else
+            "&nbsp;·&nbsp; No flat dose detected in response"
+        )
+        st.markdown(
+            f'<div style="background:#0d1117;border:1px solid {_bar_color};"'
+            f'border-radius:6px;padding:0.5rem 1rem;font-size:0.83rem;'
+            f'color:{_bar_color};margin-bottom:0.5rem;">'
+            f'👶 <b>Paediatric Query Detected</b>'
+            f'&nbsp;·&nbsp; Weight: <b>{_w:.1f} kg</b>'
+            f'&nbsp;·&nbsp; Safe max (15 mg/kg): <b>{_w * 15:.0f} mg</b>'
+            f'&nbsp;·&nbsp; Hard ceiling (20 mg/kg): <b>{_w * 20:.0f} mg</b>'
+            f'{_dose_txt}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Paediatric Critical Safety Alert (dose > weight × 20) ─────────────────
+    if paed_rule and paed_rule["severity"] == "CRITICAL":
+        st.markdown(
+            f'<div class="paediatric-alert">'
+            f'<div class="paediatric-alert-title">'
+            f'👶 PAEDIATRIC SAFETY OVERRIDE — Dose Exceeds 20 mg/kg Safety Ceiling'
+            f'</div>'
+            f'<div class="paediatric-alert-body">'
+            f'<b>Patient:</b> {paed_rule["weight_kg"]:.1f} kg &nbsp;·&nbsp; '
+            f'<b>Proposed dose:</b> {paed_rule["dose_mg"]:.0f} mg &nbsp;·&nbsp; '
+            f'<b>Hard ceiling (20 mg/kg):</b> {paed_rule["crit_ceiling_mg"]:.0f} mg<br>'
+            f'<b>Risk:</b> {paed_rule["reason"]}'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Paediatric Warning Banner (dose > weight × 15 but ≤ 20) ──────────────
+    elif paed_rule and paed_rule["severity"] == "WARNING":
+        st.markdown(
+            f'<div class="paediatric-warning">'
+            f'👶 <b>PAEDIATRIC DOSE WARNING</b> — '
+            f'Proposed dose of <b>{paed_rule["dose_mg"]:.0f} mg</b> exceeds '
+            f'the standard 15 mg/kg limit for a '
+            f'<b>{paed_rule["weight_kg"]:.1f} kg</b> patient '
+            f'(max safe: <b>{paed_rule["warn_ceiling_mg"]:.0f} mg</b>). '
+            f'Verify weight-based dosing from the source guideline before prescribing.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # ── Critical Hard-Stop Safety Alert ───────────────────────────────────────
     if hard_stop_rule:
@@ -759,25 +873,39 @@ if submitted and query.strip():
             unsafe_allow_html=True,
         )
 
-        if hard_stop_rule:
-            # ── Correct Protocol Override (shown above blurred answer) ─────────
+        # Determine whether any override (drug OR paediatric CRITICAL) fired
+        _any_override = hard_stop_rule or (paed_rule and paed_rule["severity"] == "CRITICAL")
+
+        if _any_override:
+            # ── Correct Protocol Override card ────────────────────────────────
+            _override_source = hard_stop_rule or paed_rule
+            _label_color = "#3fb950"
+            _label_icon  = "✅"
+            _label_text  = "Correct Protocol (ICMR/AIIMS)" if hard_stop_rule else "👶 Paediatric Safe-Dose Guidance"
+
             st.markdown(
-                '<span class="section-label" style="color:#3fb950;">'
-                '✅ Correct Protocol (ICMR/AIIMS)</span>',
+                f'<span class="section-label" style="color:{_label_color};">'
+                f'{_label_icon} {_label_text}</span>',
                 unsafe_allow_html=True,
             )
             st.markdown(
                 f'<div class="protocol-override">'
-                f'{hard_stop_rule["correct_treatment"].replace(chr(10), "<br>")}'
+                f'{_override_source["correct_treatment"].replace(chr(10), "<br>")}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
             st.markdown("---")
 
             # ── Blurred AI Answer with Reveal Checkbox ────────────────────────
+            _flag_label = (
+                "👶 AI Response (flagged — paediatric dose exceeds 20 mg/kg ceiling)"
+                if paed_rule and paed_rule["severity"] == "CRITICAL" and not hard_stop_rule
+                else "🔴 AI Response (flagged — may contain dangerous advice)"
+            )
+            _flag_color = "#f0883e" if (paed_rule and not hard_stop_rule) else "#f85149"
             st.markdown(
-                '<span class="section-label" style="color:#f85149;">'
-                '🔴 AI Response (flagged — may contain dangerous advice)</span>',
+                f'<span class="section-label" style="color:{_flag_color};">'
+                f'{_flag_label}</span>',
                 unsafe_allow_html=True,
             )
             reveal = st.checkbox(
@@ -905,6 +1033,8 @@ if submitted and query.strip():
         ],
         "hard_stop_name":     hard_stop_rule["name"]     if hard_stop_rule else None,
         "hard_stop_severity": hard_stop_rule["severity"] if hard_stop_rule else None,
+        "paed_rule_name":     paed_rule["name"]          if paed_rule      else None,
+        "paed_rule_severity": paed_rule["severity"]      if paed_rule      else None,
         "img_urls":       img_urls,
         "timestamp":      _ts,
         "view_mode":      view_mode,
