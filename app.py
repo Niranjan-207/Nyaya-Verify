@@ -50,6 +50,7 @@ from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 from src.utils.image_search       import get_clinical_images
 from src.utils.entity_extractor   import extract_disease_entity
+from src.utils.diagram_generator  import generate_clinical_diagram
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -241,6 +242,31 @@ hr { border-color:#30363d !important; }
     font-size: 0.8rem;
     color: #58a6ff;
     margin-bottom: 0.8rem;
+}
+
+/* ── Clinical Anatomy Diagram ────────────────────────────────────────────── */
+.diagram-container {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-top: 3px solid #58a6ff;
+    border-radius: 8px;
+    padding: 1rem 1.2rem 0.8rem;
+    margin-top: 1.4rem;
+}
+.diagram-title {
+    color: #58a6ff;
+    font-size: 0.73rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.65rem;
+    display: block;
+}
+.diagram-caption {
+    color: #8b949e;
+    font-size: 0.72rem;
+    margin-top: 0.45rem;
+    line-height: 1.5;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -807,6 +833,41 @@ if submitted and query.strip():
                     st.image(url, use_container_width=True)
             st.caption(f"Web Reference: {primary_condition} — Source: Clinical Web Search")
             st.divider()
+
+    # ── Clinical Anatomy Diagram (full-width, below dual pane) ────────────────
+    # Generated locally via matplotlib — split-pane anatomy matched to condition.
+    # SILENT FAIL: section is absent when generation returns None.
+    with st.spinner("🔬 Generating clinical anatomy diagram…"):
+        diagram_bytes = generate_clinical_diagram(
+            condition_entity=primary_condition,
+            query=query,
+            answer_text=answer_body,
+        )
+
+    if diagram_bytes:
+        st.markdown(
+            '<div class="diagram-container">'
+            '<span class="diagram-title">🔬 Clinical Anatomy Reference — '
+            'Visual Explanation</span>',
+            unsafe_allow_html=True,
+        )
+        st.image(
+            diagram_bytes,
+            caption=(
+                f"Split-pane anatomy diagram for: {primary_condition}  ·  "
+                f"Panel A = cross-section / pathway  ·  Panel B = contextual anatomy  ·  "
+                f"Labels sync with clinical text above"
+            ),
+            use_container_width=True,
+        )
+        st.markdown(
+            '<div class="diagram-caption">'
+            '📌 <b>Visual Sync:</b> Every anatomical term labelled in the diagram '
+            'corresponds to a clinical value or structure described in the verified '
+            'answer. Use the panels as a reference key while reading the protocol above.'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
 
     # ── Save current result to session history ─────────────────────────────────
     _ts = verdicts[0]["timestamp"] if verdicts else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
