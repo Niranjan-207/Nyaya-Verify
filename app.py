@@ -50,7 +50,6 @@ from src.ingestion.pdf_parser     import extract_text_with_metadata
 from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 from src.utils.image_search       import get_clinical_images
 from src.utils.entity_extractor   import extract_disease_entity
-from src.utils.diagram_generator  import generate_clinical_diagram
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -244,29 +243,19 @@ hr { border-color:#30363d !important; }
     margin-bottom: 0.8rem;
 }
 
-/* ── Clinical Anatomy Diagram ────────────────────────────────────────────── */
-.diagram-container {
-    background: #0d1117;
+/* ── Clinical Image Gallery ──────────────────────────────────────────────── */
+.img-card {
+    background: #161b22;
     border: 1px solid #30363d;
-    border-top: 3px solid #58a6ff;
     border-radius: 8px;
-    padding: 1rem 1.2rem 0.8rem;
-    margin-top: 1.4rem;
+    padding: 0.5rem 0.5rem 0.4rem;
+    text-align: center;
 }
-.diagram-title {
-    color: #58a6ff;
-    font-size: 0.73rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin-bottom: 0.65rem;
-    display: block;
-}
-.diagram-caption {
+.img-card-caption {
     color: #8b949e;
-    font-size: 0.72rem;
-    margin-top: 0.45rem;
-    line-height: 1.5;
+    font-size: 0.70rem;
+    margin-top: 0.35rem;
+    line-height: 1.4;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -815,59 +804,42 @@ if submitted and query.strip():
         _conf_bar("Overall NLI Confidence", top_verdict["confidence"], top_verdict["color"])
         st.divider()
 
-        # ── Web-Retrieved Clinical Images (up to 3) ────────────────────────────
-        # Fetched after pipeline closes — answer already visible in left pane.
-        # SILENT FAIL: if no images found, section is entirely absent.
-        with st.spinner("🔍 Fetching clinical reference images…"):
-            img_urls = get_clinical_images(primary_condition, count=3)
+        # NLI chip display only — images moved to full-width section below
+        pass
 
-        if img_urls:
-            st.markdown(
-                '<span class="section-label" style="color:#58a6ff;">'
-                '🌐 Clinical Reference Images</span>',
-                unsafe_allow_html=True,
-            )
-            img_cols = st.columns(len(img_urls))
-            for col, url in zip(img_cols, img_urls):
-                with col:
-                    st.image(url, use_container_width=True)
-            st.caption(f"Web Reference: {primary_condition} — Source: Clinical Web Search")
-            st.divider()
+    # ── Clinical Reference Images — full-width section ────────────────────────
+    # Fetched after the dual pane renders so the answer is already visible.
+    # Uses Wikipedia media-list + DuckDuckGo to find relevant images for ANY
+    # medical condition. SILENT FAIL: section absent if no images found.
+    with st.spinner("🔍 Fetching clinical reference images…"):
+        img_urls = get_clinical_images(primary_condition, count=3)
 
-    # ── Clinical Anatomy Diagram (full-width, below dual pane) ────────────────
-    # Generated locally via matplotlib — split-pane anatomy matched to condition.
-    # SILENT FAIL: section is absent when generation returns None.
-    with st.spinner("🔬 Generating clinical anatomy diagram…"):
-        diagram_bytes = generate_clinical_diagram(
-            condition_entity=primary_condition,
-            query=query,
-            answer_text=answer_body,
-        )
-
-    if diagram_bytes:
+    if img_urls:
+        st.markdown("---")
         st.markdown(
-            '<div class="diagram-container">'
-            '<span class="diagram-title">🔬 Clinical Anatomy Reference — '
-            'Visual Explanation</span>',
+            '<span class="section-label" style="color:#58a6ff;font-size:0.78rem;">'
+            '🌐 &nbsp;Clinical Reference Images &nbsp;—&nbsp; '
+            + primary_condition +
+            '</span>',
             unsafe_allow_html=True,
         )
-        st.image(
-            diagram_bytes,
-            caption=(
-                f"Split-pane anatomy diagram for: {primary_condition}  ·  "
-                f"Panel A = cross-section / pathway  ·  Panel B = contextual anatomy  ·  "
-                f"Labels sync with clinical text above"
-            ),
-            use_container_width=True,
-        )
-        st.markdown(
-            '<div class="diagram-caption">'
-            '📌 <b>Visual Sync:</b> Every anatomical term labelled in the diagram '
-            'corresponds to a clinical value or structure described in the verified '
-            'answer. Use the panels as a reference key while reading the protocol above.'
-            '</div></div>',
-            unsafe_allow_html=True,
-        )
+
+        img_cols = st.columns(len(img_urls), gap="medium")
+        labels = [
+            "Condition / Anatomy",
+            "Clinical Presentation",
+            "Pathophysiology / Histology",
+        ]
+        for i, (col, url) in enumerate(zip(img_cols, img_urls)):
+            with col:
+                st.image(url, use_container_width=True)
+                st.markdown(
+                    f'<div class="img-card-caption">'
+                    f'<b style="color:#58a6ff;">{labels[i]}</b><br>'
+                    f'Source: Wikipedia / Clinical Web Search'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
     # ── Save current result to session history ─────────────────────────────────
     _ts = verdicts[0]["timestamp"] if verdicts else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
