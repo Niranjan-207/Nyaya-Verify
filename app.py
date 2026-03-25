@@ -51,6 +51,11 @@ from src.ingestion.semantic_chunker import HybridHierarchicalChunker
 from src.utils.image_search       import get_clinical_images
 from src.utils.entity_extractor   import extract_disease_entity
 
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+from src.auth.database import init_db
+from src.auth.pages    import render_auth_gate
+init_db()   # creates medverify.db + users table on first run (idempotent)
+
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Med-Verify | Clinical Logic Engine",
@@ -58,6 +63,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ─── Auth Gate ─────────────────────────────────────────────────────────────────
+# Initialise session keys on first load, then gate every re-run.
+if "authenticated" not in st.session_state:
+    st.session_state.update({
+        "authenticated":    False,
+        "auth_page":        "login",
+        "auth_user_id":     None,
+        "auth_user_name":   None,
+        "auth_user_email":  None,
+    })
+
+if not st.session_state.get("authenticated"):
+    render_auth_gate()
+    st.stop()        # nothing below executes until the user is authenticated
 
 # ─── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
@@ -497,6 +517,30 @@ with st.sidebar:
         'Optimised for RTX 4050 / 6 GB VRAM.</div>',
         unsafe_allow_html=True,
     )
+
+    # ── Logged-in user card + Logout ──────────────────────────────────────────
+    st.markdown('<hr style="margin:0.8rem 0;">', unsafe_allow_html=True)
+    _uname = st.session_state.get("auth_user_name", "")
+    _uemail = st.session_state.get("auth_user_email", "")
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;'
+        f'padding:0.7rem 0.9rem;margin-bottom:0.6rem;">'
+        f'<div style="font-size:0.78rem;color:#c9d1d9;font-weight:600;">👤 {_uname}</div>'
+        f'<div style="font-size:0.70rem;color:#8b949e;margin-top:0.15rem;">{_uemail}</div>'
+        f'<div style="margin-top:0.3rem;">'
+        f'<span style="background:#1a4731;color:#3fb950;border:1px solid #238636;'
+        f'border-radius:10px;padding:1px 8px;font-size:0.68rem;font-weight:700;">'
+        f'✓ ACTIVE</span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("🚪 Sign Out", use_container_width=True, key="logout_btn"):
+        # Clear auth state and return to login
+        for k in ("authenticated", "auth_user_id", "auth_user_name",
+                  "auth_user_email", "query_history"):
+            st.session_state.pop(k, None)
+        st.session_state["auth_page"] = "login"
+        st.rerun()
 
 
 # ─── Main Header ──────────────────────────────────────────────────────────────

@@ -15,3 +15,8 @@ ragas
 pyyaml
 streamlit
 langchain-ollama
+
+# Auth and Payment
+sqlalchemy
+qrcode[pil]
+Pillow

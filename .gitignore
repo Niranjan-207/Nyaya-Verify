@@ -28,3 +28,6 @@ data/input_pdfs/
 .env
 *.gguf
 CLAUDE_BRAIN.md
+
+# Med-Verify SQLite database (local only)
+medverify.db
