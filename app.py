@@ -7,7 +7,7 @@ import streamlit as st
 _config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
 with open(_config_path, 'r') as f:
     _config = yaml.safe_load(f)
-model_name = _config.get('model_name', 'llama3.2:3b')
+model_name = _config.get('model_name', 'llama3.2:8b')
 
 from src.retrieval.vector_store import ChromaDataStore
 from src.audit.nli_judge import PairwiseAuditor
