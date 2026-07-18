@@ -39,15 +39,9 @@ The Indian legal system is currently undergoing a massive statutory transition f
     [Faithful Output Generation]
 ```
 
-## Performance Metrics
+## Evaluation
 
-| Metric | Value |
-|--------|-------|
-| Faithfulness Score | 0.83 across 32 Indian statutes |
-| Logic Flip Accuracy | 98% |
-| Hallucination Reduction | 83.3% |
-| NLI Audit Latency | <200ms |
-| Throughput | 150+ tokens/sec |
+This project includes evaluation scripts (`src/evaluation/faithfulness_scorer.py`, `src/evaluation/rag_evaluator.py`) for measuring faithfulness and contradiction-detection accuracy on retrieved legal context. Formal benchmarking across a larger statute set is a planned next step.
 
 ## Tech Stack
 
