@@ -3,10 +3,11 @@ import numpy as np
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 import scipy.spatial.distance as distance
+from src.device import get_device
 
 class HybridHierarchicalChunker:
     def __init__(self, model_name="BAAI/bge-small-en-v1.5", window_size=5, distance_multiplier=1.5):
-        self.model = SentenceTransformer(model_name, device='cuda')
+        self.model = SentenceTransformer(model_name, device=get_device())
         self.window_size = window_size
         self.distance_multiplier = distance_multiplier
         

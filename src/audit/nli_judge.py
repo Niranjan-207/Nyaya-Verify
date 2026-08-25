@@ -1,12 +1,13 @@
-import itertools
 import torch
 import gc
 from typing import List, Dict, Any
 from sentence_transformers.cross_encoder import CrossEncoder
+from src.device import get_device
 
 class PairwiseAuditor:
     def __init__(self, model_name="cross-encoder/nli-deberta-v3-small"):
-        self.model = CrossEncoder(model_name)
+        self.device = get_device()
+        self.model = CrossEncoder(model_name, device=self.device)
         
     def detect_logic_flips(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

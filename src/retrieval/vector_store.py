@@ -2,13 +2,14 @@ import os
 from typing import List, Dict, Any
 import chromadb
 from sentence_transformers import SentenceTransformer
+from src.device import get_device
 
 class ChromaDataStore:
     def __init__(self, persist_directory="data/chroma_db", collection_name="nyaya_legal", model_name="BAAI/bge-small-en-v1.5"):
         os.makedirs(persist_directory, exist_ok=True)
         self.client = chromadb.PersistentClient(path=persist_directory)
         self.collection = self.client.get_or_create_collection(name=collection_name)
-        self.model = SentenceTransformer(model_name, device='cuda')
+        self.model = SentenceTransformer(model_name, device=get_device())
         
     def ingest(self, chunks: List[Dict[str, Any]]) -> int:
         if not chunks:
