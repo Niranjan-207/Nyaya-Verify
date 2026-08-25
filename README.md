@@ -1,7 +1,6 @@
 # Nyaya-Verify: Contradiction-Aware RAG for the Indian Legal Domain
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-blue)
-![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Model](https://img.shields.io/badge/Model-llama3.1:8b-orange)
 
 ## What it does
